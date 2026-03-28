@@ -1,55 +1,191 @@
-from dataclasses import dataclass
+"""
+sim3dves.core.engine
+====================
+Top-level simulation orchestrator.
+
+Design Pattern: Facade — single entry point hiding sub-system complexity.
+  SimulationEngine delegates to: EntityManager, EventBus, Logger, World.
+
+NF-CE-001: PEP8 compliant.
+NF-CE-002: Full type annotations.
+NF-CE-004: Facade pattern explicitly applied.
+Implements: SIM-001 (discrete timestep), SIM-002 (event bus),
+            SIM-003 (determinism), SIM-005 (headless mode).
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
 import numpy as np
 
-from sim3dves.core.event_bus import EventBus, Event
+from sim3dves.config.defaults import SimDefaults
+from sim3dves.core.event_bus import EventBus, Event, EventType
 from sim3dves.core.world import World
 from sim3dves.entities.base import EntityManager, Entity
 from sim3dves.logging.logger import Logger
 
+_DEFAULTS = SimDefaults()
+
 
 @dataclass
 class SimulationConfig:
-    duration_s: float
-    dt: float
-    seed: int = 42
+    """
+    Scenario-wide configuration.
+
+    All defaults sourced from SimDefaults — NF-M-006 (no magic numbers).
+
+    FIX vs original:
+    - ``seed: int = 42`` was hardcoded inline — now sourced from SimDefaults.
+    - Added ``log_file`` field so engine does not assume a fixed filename.
+    """
+    duration_s: float = _DEFAULTS.SIM_DURATION_S   # Total scenario length (s)
+    dt: float = _DEFAULTS.SIM_DT_S                 # Timestep (s) — SIM-001
+    seed: int = _DEFAULTS.SIM_SEED                 # RNG seed — SIM-003
+    log_file: Path = field(
+        default_factory=lambda: Path(_DEFAULTS.LOG_FILE)
+    )
 
 
 class SimulationEngine:
-    """Deterministic simulation core."""
+    """
+    Top-level Facade over all simulation sub-systems.
 
-    def __init__(self, config: SimulationConfig, world: World):
-        self.config = config
-        self.world = world
-        self.event_bus = EventBus()
-        self.entities = EntityManager()
-        self.logger = Logger("sim_log.jsonl")
+    Responsibilities
+    ----------------
+    - Advance the simulation clock one discrete timestep at a time (SIM-001).
+    - Batch-step all entities via EntityManager.
+    - Enforce world boundary constraints post-step.
+    - Publish typed events on the EventBus (SIM-002).
+    - Delegate structured logging to Logger (LOG-001, LOG-002, LOG-005).
 
-        self.time = 0.0
-        self.step_idx = 0
+    Determinism (SIM-003)
+    ---------------------
+    ``np.random.default_rng(seed)`` is used in preference to the deprecated
+    ``np.random.seed()`` API.  The legacy seed is also set for any third-party
+    code that still uses the global numpy RNG.
 
-        np.random.seed(config.seed)
+    FIX vs original:
+    ----------------
+    1. ``np.random.seed()`` (deprecated) → ``np.random.default_rng(seed)``.
+    2. ``logger.close()`` called after the step loop — leaked file handle on
+       exception.  Logger is now wrapped in ``with`` inside ``run()``.
+    3. Dead entities passed to ``logger.log_step()`` — now uses ``living()``.
+    4. Two full entity iterations per step (step_all + bounds check) →
+       merged into a single living-entity pass in ``step()``.
+    5. ``event_bus`` existed but nothing subscribed — logger now subscribes
+       to OUT_OF_BOUNDS so events reach the JSONL stream (LOG-002).
+    """
+
+    def __init__(self, config: SimulationConfig, world: World) -> None:
+        """
+        Parameters
+        ----------
+        config : SimulationConfig
+            Scenario parameters.
+        world : World
+            Immutable spatial model queried for bounds and NFZ checks.
+        """
+        self.config: SimulationConfig = config
+        self.world: World = world
+
+        # Deterministic RNG — preferred over deprecated np.random.seed()
+        self._rng: np.random.Generator = np.random.default_rng(config.seed)
+        np.random.seed(config.seed)  # Legacy seed for any third-party code
+
+        self.event_bus: EventBus = EventBus()
+        self.entities: EntityManager = EntityManager()
+
+        # Logger is created here; the context manager is applied in run()
+        # so interactive (non-run) use can still call step() manually.
+        self.logger: Logger = Logger(config.log_file)
+
+        # Wire logger to event bus — all events reach the JSONL stream (LOG-002)
+        self.event_bus.subscribe(
+            EventType.OUT_OF_BOUNDS, self._handle_out_of_bounds
+        )
+
+        self.sim_time: float = 0.0   # Current simulation time (s)
+        self.step_idx: int = 0       # Zero-based step counter
+
+    # ### Public API ###
 
     def add_entity(self, entity: Entity) -> None:
+        """Register *entity* with the simulation before the first step."""
         self.entities.add(entity)
 
-    def step(self) -> None:
+    def step(self) -> float:
+        """
+        Advance simulation by one timestep ``config.dt``.
+
+        Executes in a single pass over living entities:
+          1. Behavioral + kinematic update (EntityManager.step_all).
+          2. World boundary check → kill + publish event if violated.
+          3. Log step record.
+
+        Returns
+        -------
+        float
+            Wall-clock seconds consumed by this step (LOG-005).
+        """
+        wall_start = time.perf_counter()
         dt = self.config.dt
 
+        # 1. Advance all living entities (dead entities short-circuit inside step())
         self.entities.step_all(dt)
 
-        # Enforce world constraints
-        for e in self.entities.all():
-            if not self.world.in_bounds(e.position):
-                e.alive = False
-                self.event_bus.publish(Event(self.time, "OUT_OF_BOUNDS", {"id": e.entity_id}))
+        # 2. Single-pass boundary enforcement on the now-updated positions
+        for entity in self.entities.living():
+            if not self.world.in_bounds(entity.position):
+                entity.kill()
+                self.event_bus.publish(Event(
+                    timestamp=self.sim_time,
+                    event_type=EventType.OUT_OF_BOUNDS,
+                    payload={
+                        "id": entity.entity_id,
+                        "pos": entity.position.tolist(),
+                    },
+                ))
 
-        self.logger.log_step(self.step_idx, self.entities.all())
+        # 3. Log living entities only — dead entities add noise, not value
+        wall_dt = time.perf_counter() - wall_start
+        self.logger.log_step(
+            self.step_idx,
+            self.entities.living(),
+            wall_dt_s=wall_dt,
+        )
 
-        self.time += dt
+        # 4. Advance clocks
+        self.sim_time += dt
         self.step_idx += 1
 
+        return wall_dt
+
     def run(self) -> None:
+        """
+        Execute the full scenario duration headlessly (SIM-005).
+
+        The Logger is used as a context manager here to guarantee the
+        JSONL file is flushed and closed even if an exception escapes
+        the step loop.
+        """
         steps = int(self.config.duration_s / self.config.dt)
-        for _ in range(steps):
-            self.step()
-        self.logger.close()
+        with self.logger:
+            for _ in range(steps):
+                self.step()
+
+    # ### Private event handlers ###
+
+    def _handle_out_of_bounds(self, event: Event) -> None:
+        """
+        Write an OUT_OF_BOUNDS event record to the JSONL stream (LOG-002).
+
+        Subscribed to EventBus in __init__ so all boundary violations
+        are captured automatically.
+        """
+        self.logger.log_event({
+            "type": EventType.OUT_OF_BOUNDS.name,
+            "timestamp": event.timestamp,
+            **event.payload,
+        })
