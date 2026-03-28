@@ -2,6 +2,7 @@ import numpy as np
 import uuid
 import time
 
+
 from sim3dves.core.engine import SimulationEngine, SimulationConfig
 from sim3dves.core.world import World
 from sim3dves.entities.pedestrian import PedestrianEntity
