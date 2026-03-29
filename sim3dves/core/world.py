@@ -3,6 +3,13 @@ sim3dves.core.world
 ===================
 Immutable spatial model of the simulation environment.
 
+M2 addition
+-----------
+``road_network: Optional[RoadNetwork]`` field added to World.
+World now acts as a Facade over Terrain, AABB structures, NFZ volumes,
+*and* the road network — providing a single authoritative spatial API.
+
+
 Implements: ENV-001 through ENV-007.
 NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
@@ -15,21 +22,32 @@ from typing import List, Optional
 
 import numpy as np
 
+from sim3dves.maps.road_network import RoadNetwork
 
 # ### Structure primitives ###
+
 
 @dataclass(frozen=True)
 class AABB:
     """
-    Axis-Aligned Bounding Box structure (ENV-003).
+    Axis-Aligned Bounding Box obstacle (ENV-003).
 
     Represents an opaque obstacle that blocks line-of-sight
     and prevents entity traversal.
+
+    Attributes
+    ----------
+    x, y : float
+        South-West corner position (ENU metres).
+    width, depth : float
+        Extents along X and Y axes (m).
+    height : float
+        Structure height above terrain (m).
     """
-    x: float        # South-West corner X (m, ENU East axis)
-    y: float        # South-West corner Y (m, ENU North axis)
-    width: float    # Extent along X (m)
-    depth: float    # Extent along Y (m)
+    x: float  # South-West corner X (m, ENU East axis)
+    y: float  # South-West corner Y (m, ENU North axis)
+    width: float  # Extent along X (m)
+    depth: float  # Extent along Y (m)
     height: float = 0.0  # Structure height above ground (m)
 
     def contains_xy(self, position: np.ndarray) -> bool:
@@ -47,10 +65,19 @@ class NFZCylinder:
 
     Any UAV whose 3-D position falls inside this volume
     is in violation of FLR-001.
+
+    Attributes
+    ----------
+    center_xy : np.ndarray
+        [x, y] center of the cylinder (m).
+    radius_m : float
+        Horizontal radius (m).
+    alt_max_m : float
+        AGL altitude ceiling of this NFZ (m).
     """
-    center_xy: np.ndarray   # (x, y) center of the cylinder (m)
-    radius_m: float         # Horizontal radius (m)
-    alt_max_m: float        # AGL altitude ceiling of the NFZ (m)
+    center_xy: np.ndarray  # (x, y) center of the cylinder (m)
+    radius_m: float  # Horizontal radius (m)
+    alt_max_m: float  # AGL altitude ceiling of the NFZ (m)
 
     def contains(self, position: np.ndarray) -> bool:
         """Return True if *position* violates this NFZ volume."""
@@ -78,7 +105,7 @@ class Terrain:
 
     def elevation_at(self, xy: np.ndarray) -> float:
         """
-        Return terrain elevation at position *xy* = [x, y] in metres.
+        Return terrain elevation at position *xy* = [x, y] in metres above datum.
 
         Parameters
         ----------
@@ -88,14 +115,14 @@ class Terrain:
         Returns
         -------
         float
-            Elevation above datum (m). Always 0.0 for flat terrain.
+            0.0 for flat terrain (DEM placeholder for M3+).
         """
         # Flat-terrain default — replace with DEM bilinear interpolation in M2+
         return 0.0
 
     @property
     def extent(self) -> np.ndarray:
-        """World extent (X_max, Y_max) in metres."""
+        """World extent [X_max, Y_max] in metres."""
         return self._extent
 
 
@@ -103,19 +130,24 @@ class Terrain:
 
 class World:
     """
-    Spatial container for all static environment data.
+    Spatial Facade over terrain, structures, NFZ volumes, and road network.
 
-    Acts as a Facade over Terrain, AABB structures, and NFZ volumes.
-    The SimulationEngine and entity spawners query World exclusively —
-    they never access sub-models directly.
+    M2: added ``road_network`` field (ENV-006, VEH-003).
 
-    FIX vs original:
-    - Was a ``@dataclass`` holding a bare numpy array (equality issues).
-    - Replaced with a full class exposing a coherent spatial API.
-    - Added terrain model, snap_to_terrain(), NFZ query, structure query.
-    - ``in_bounds()`` was XY-only; altitude floor/ceiling now exposed.
-
-    Implements: ENV-001 to ENV-007.
+    Parameters
+    ----------
+    extent : np.ndarray
+        [X_max, Y_max] world footprint in metres (ENV-001).
+    alt_floor_m : float
+        UAV minimum AGL (FLR-002).
+    alt_ceil_m : float
+        UAV maximum AGL (FLR-003).
+    structures : list[AABB], optional
+        Opaque obstacles for LOS / occlusion checks (ENV-003).
+    nfz_cylinders : list[NFZCylinder], optional
+        No-fly zone volumes (ENV-005).
+    road_network : RoadNetwork, optional
+        Road graph for vehicle navigation (ENV-006, VEH-003).
     """
 
     def __init__(
@@ -125,27 +157,15 @@ class World:
         alt_ceil_m: float = 500.0,
         structures: Optional[List[AABB]] = None,
         nfz_cylinders: Optional[List[NFZCylinder]] = None,
+        road_network: Optional[RoadNetwork] = None,
     ) -> None:
-        """
-        Parameters
-        ----------
-        extent : np.ndarray
-            2-D array [X_max, Y_max] defining the world footprint (m).
-        alt_floor_m : float
-            Minimum AGL altitude (UAV floor constraint).
-        alt_ceil_m : float
-            Maximum AGL altitude (UAV ceiling constraint).
-        structures : list[AABB], optional
-            Opaque obstacle list for LOS/occlusion checks.
-        nfz_cylinders : list[NFZCylinder], optional
-            No-fly zone volumes.
-        """
         self.terrain: Terrain = Terrain(extent)
         self.extent: np.ndarray = extent.astype(float)
         self.alt_floor_m: float = float(alt_floor_m)
         self.alt_ceil_m: float = float(alt_ceil_m)
         self.structures: List[AABB] = structures or []
         self.nfz_cylinders: List[NFZCylinder] = nfz_cylinders or []
+        self.road_network: Optional[RoadNetwork] = road_network  # ENV-006
 
     # ### Boundary queries ###
 
@@ -161,7 +181,7 @@ class World:
         return any(nfz.contains(position) for nfz in self.nfz_cylinders)
 
     def occluded_by_structure(self, position: np.ndarray) -> bool:
-        """Return True if *position* (x, y) falls inside a structure footprint."""
+        """Return True if *position* (x, y) is inside a structure footprint."""
         return any(s.contains_xy(position) for s in self.structures)
 
     # ### Terrain helpers ###
@@ -172,10 +192,10 @@ class World:
 
     def snap_to_terrain(self, position: np.ndarray) -> np.ndarray:
         """
-        Return a copy of *position* with Z set to terrain elevation.
+        Return copy of position with Z set to terrain elevation (Req-7).
 
-        Used by entity spawners to satisfy Req-7:
-        pedestrians are placed on the terrain surface, never at a random Z.
+        Used by entity spawners to ensure ground entities start on the
+        terrain surface rather than at an arbitrary Z value.
 
         Parameters
         ----------
@@ -187,6 +207,6 @@ class World:
         np.ndarray
             New position with z = terrain_elevation(x, y).
         """
-        snapped = position.copy().astype(float)
+        snapped = position.astype(float).copy()
         snapped[2] = self.terrain.elevation_at(position[:2])
         return snapped

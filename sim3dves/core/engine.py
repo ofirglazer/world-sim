@@ -21,9 +21,9 @@ from pathlib import Path
 import numpy as np
 
 from sim3dves.config.defaults import SimDefaults
-from sim3dves.core.event_bus import EventBus, Event, EventType
+from sim3dves.core.event_bus import Event, EventBus, EventType
 from sim3dves.core.world import World
-from sim3dves.entities.base import EntityManager, Entity
+from sim3dves.entities.base import Entity, EntityManager
 from sim3dves.logging.logger import Logger
 
 _DEFAULTS = SimDefaults()
