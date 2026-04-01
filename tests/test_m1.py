@@ -32,7 +32,7 @@ from sim3dves.logging.logger import Logger
 _D = SimDefaults()
 
 
-# ── Fixtures ───────────────────────────────────────────────────────────────────
+# ### Fixtures ###
 
 @pytest.fixture
 def small_world() -> World:
@@ -69,7 +69,7 @@ def _spawn_pedestrian(
     )
 
 
-# ── ENT-001 / ENT-002: Entity base model and type enum ────────────────────────
+# ### ENT-001 / ENT-002: Entity base model and type enum ###
 
 class TestEntityBase:
     """ENT-001, ENT-002: Entity model and EntityType enum."""
@@ -111,7 +111,7 @@ class TestEntityBase:
         np.testing.assert_array_equal(ped.position, pos_before)
 
 
-# ── PED-001: Pedestrian speed envelope ────────────────────────────────────────
+# ### PED-001: Pedestrian speed envelope ###
 
 class TestPedestrianKinematics:
     """PED-001, PED-004, Req-7: Pedestrian kinematic invariants."""
@@ -176,7 +176,7 @@ class TestPedestrianKinematics:
         assert ped.heading == pytest.approx(expected, abs=1.0)
 
 
-# ── EntityManager ─────────────────────────────────────────────────────────────
+# ### EntityManager ###
 
 class TestEntityManager:
     """ENT-001: EntityManager registry behaviour."""
@@ -227,7 +227,7 @@ class TestEntityManager:
         assert len(uavs) == 0
 
 
-# ── World ──────────────────────────────────────────────────────────────────────
+# ### World ###
 
 class TestWorld:
     """ENV-001 to ENV-007: World spatial model."""
@@ -273,7 +273,7 @@ class TestWorld:
         assert not world.occluded_by_structure(outside)
 
 
-# ── EventBus ──────────────────────────────────────────────────────────────────
+# ### EventBus ###
 
 class TestEventBus:
     """SIM-002: Event bus publish-subscribe behaviour."""
@@ -308,7 +308,7 @@ class TestEventBus:
         assert len(received) == 0
 
 
-# ── SimulationEngine ───────────────────────────────────────────────────────────
+# ### SimulationEngine ###
 
 class TestSimulationEngine:
     """SIM-001, SIM-003, SIM-005, ENV-001: Engine-level behaviour."""
@@ -373,7 +373,7 @@ class TestSimulationEngine:
         assert snap1 == snap2, "Simulation is non-deterministic"
 
 
-# ── Logger ────────────────────────────────────────────────────────────────────
+# ### Logger ###
 
 class TestLogger:
     """LOG-001, LOG-002, LOG-005: Logger output correctness."""

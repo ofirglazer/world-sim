@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Dict, List, Callable, Any
+from typing import Any, Callable, Dict, List
 
 
 class EventType(Enum):

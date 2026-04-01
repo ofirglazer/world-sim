@@ -1,17 +1,17 @@
 """
 sim3dves.entities.base
 ======================
-Abstract entity base class, type/state enumerations, and entity registry.
+Abstract Entity base class, type/state enumerations, and EntityManager.
+
+M2 changes
+----------
+* Entity.step() / _update_behavior() accept Optional[StepContext].
+* EntityManager.step_all() builds per-entity StepContext via vectorised
+  O(n²) neighbour search before any entity is updated (time-t consistency).
 
 Design Patterns:
-- Template Method: Entity.step() defines the algorithm skeleton;
-  subclasses implement _update_behavior() and _update_kinematics().
-- Registry: EntityManager is the authoritative index of all entities.
-
-NF-CE-001: PEP8 compliant.
-NF-CE-002: Full type annotations.
-NF-CE-004: Template Method and Registry patterns applied.
-Implements: ENT-001, ENT-002, ENT-003, ENT-004.
+Template Method (Entity), Registry (EntityManager).
+NF-CE-001..005 compliant. Implements: ENT-001..004, SIM-001, NF-P-001.
 """
 from __future__ import annotations
 
@@ -22,16 +22,16 @@ from typing import Dict, Iterator, List, Optional
 
 import numpy as np
 
+from sim3dves.config.defaults import SimDefaults
+from sim3dves.entities.context import StepContext
 
-# ── Enumerations ───────────────────────────────────────────────────────────────
+_D = SimDefaults()
+
+# ### Enumerations ###
+
 
 class EntityType(Enum):
-    """
-    Entity type catalogue (ENT-002).
-
-    FIX vs original: raw string literals ("PEDESTRIAN") replaced with this
-    enum — prevents typo bugs, enables exhaustive pattern matching.
-    """
+    """ Entity type catalogue — Enum, not raw strings (ENT-002)."""
     PEDESTRIAN = auto()
     WHEELED_VEHICLE = auto()
     TRACKED_VEHICLE = auto()
@@ -51,7 +51,7 @@ class EntityState(Enum):
     DEAD = auto()
 
 
-# ── Abstract Entity ────────────────────────────────────────────────────────────
+# ### Abstract Entity ###
 
 class Entity(ABC):
     """
@@ -60,22 +60,30 @@ class Entity(ABC):
     Design Pattern — Template Method
     ---------------------------------
     ``step()`` defines the fixed algorithm sequence:
-      1. _update_behavior()  — FSM logic, waypoint nav, social forces …
-      2. _update_kinematics() — velocity integration, physics constraints
-      3. _update_heading()   — derive heading from velocity vector
+      1. Dead-guard.
+      2. _update_behavior(dt, context) — subclass hook.
+      3. _update_kinematics(dt)       — subclass hook.
+      4. _update_heading()            — shared concrete helper.
 
     Subclasses override only the two abstract hooks; the orchestration
     order and guard (``if not self.alive``) are guaranteed by the base.
 
-    FIX vs original:
-    - Was a ``@dataclass``; dataclasses with mutable numpy fields cause
-      hashing, equality, and repr bugs — replaced with explicit ``__init__``.
-    - ``entity_type: str`` → ``EntityType`` enum (ENT-002).
-    - Added ``is_eoi`` flag (PED-004, VEH-005).
-    - Added ``signature`` for detection model (VEH-006).
-    - Added ``state: EntityState`` FSM field (ENT-003).
-    - Added ``_update_heading()`` so all subclasses get consistent heading.
-    - Added ``kill()`` helper for clean state transitions.
+    Parameters
+    ----------
+    entity_id : str
+        Globally unique identifier.
+    entity_type : EntityType
+        Enum discriminator (ENT-002).
+    position : np.ndarray
+        3-D ENU position [x, y, z] in metres.
+    velocity : np.ndarray
+        3-D ENU velocity [vx, vy, vz] in m/s.
+    heading : float
+        Initial heading in degrees (0° = East, CCW positive).
+    is_eoi : bool
+        Entity of Interest flag (PED-004, VEH-005).
+    signature : float
+        Optical/thermal contrast in [0, 1] (VEH-006).
     """
 
     def __init__(
@@ -88,25 +96,6 @@ class Entity(ABC):
         is_eoi: bool = False,
         signature: float = 1.0,
     ) -> None:
-        """
-        Parameters
-        ----------
-        entity_id : str
-            Globally unique entity identifier.
-        entity_type : EntityType
-            Enum classifying this entity (ENT-002).
-        position : np.ndarray
-            3-D ENU position [x, y, z] in metres.
-        velocity : np.ndarray
-            3-D ENU velocity [vx, vy, vz] in m/s.
-        heading : float
-            Initial heading in degrees (0° = East, CCW positive).
-        is_eoi : bool
-            True if this entity is an Entity of Interest (PED-004, VEH-005).
-        signature : float
-            Optical/thermal signature factor in [0, 1] (VEH-006).
-            1.0 = maximum contrast; 0.0 = invisible.
-        """
         self.entity_id: str = entity_id
         self.entity_type: EntityType = entity_type
         self.position: np.ndarray = position.astype(float)
@@ -117,40 +106,41 @@ class Entity(ABC):
         self.alive: bool = True
         self.state: EntityState = EntityState.IDLE
 
-    # ── Template Method skeleton ───────────────────────────────────
+    # ### Template Method skeleton ###
 
-    def step(self, dt: float) -> None:
+    def step(self, dt: float, context: Optional[StepContext] = None) -> None:
         """
         Advance entity by one simulation timestep *dt* (seconds).
 
         Do NOT override this method in subclasses.
         Implement ``_update_behavior()`` and ``_update_kinematics()`` instead.
+
+        Parameters
+        ----------
+        dt : float
+            Simulation timestep (SIM-001).
+        context : StepContext, optional
+            Neighbourhood snapshot for social force etc. (PED-003).
         """
         if not self.alive:
             return  # Dead entities are frozen — no further updates
-        self._update_behavior(dt)
+        self._update_behavior(dt, context)
         self._update_kinematics(dt)
         self._update_heading()
 
-    # ── Abstract hooks (subclass responsibility) ───────────────────
+    # ### Abstract hooks (subclass responsibility) ###
 
     @abstractmethod
-    def _update_behavior(self, dt: float) -> None:
-        """
-        Apply FSM-driven behavioral logic for one timestep.
-
-        Examples: waypoint navigation, social force, idle transitions.
-        """
+    def _update_behavior(
+        self, dt: float, context: Optional[StepContext] = None
+    ) -> None:
+        """FSM + navigation + social force logic (subclass responsibility)."""
 
     @abstractmethod
     def _update_kinematics(self, dt: float) -> None:
-        """
-        Integrate velocity into position and enforce physics constraints.
+        """Velocity integration + physics constraints (subclass responsibility)."""
 
-        Examples: Euler integration, speed clamping, terrain lock.
-        """
-
-    # ── Shared concrete helpers ────────────────────────────────────
+    # ### Shared concrete helpers ###
 
     def _update_heading(self) -> None:
         """
@@ -174,34 +164,24 @@ class Entity(ABC):
         self.state = EntityState.DEAD
 
 
-# ── Entity Registry ────────────────────────────────────────────────────────────
+# ### Entity Registry ###
 
 class EntityManager:
     """
-    Registry and batch-step coordinator for all simulation entities.
+    Authoritative indexed collection and batch-step coordinator (ENT-001).
 
-    Design Pattern — Registry
-    -------------------------
-    Maintains the authoritative, indexed collection of entities.
-    Callers interact with the manager rather than holding direct
-    references to the entity dict.
+    M2: step_all() snapshots all positions into a numpy matrix, computes a
+    vectorised neighbour distance matrix, builds StepContext per entity,
+    then dispatches step(dt, context) — all neighbour data is from time t.
 
-    Performance note (NF-P-001):
-    The current dict-based implementation is clear and correct for M1.
-    For ≥ 200 entities, replace the inner lists with NumPy structured
-    arrays to enable vectorized position updates (future milestone).
-
-    FIX vs original:
-    - Added ``remove()`` for entity lifecycle management.
-    - Added ``living()`` — returns only alive entities (avoids logging dead ones).
-    - Added ``by_type()`` for payload FOV queries in later milestones.
-    - ``add()`` now raises ``ValueError`` on duplicate IDs instead of silently
-      overwriting.
-    - Added ``__len__`` and ``__iter__`` for Pythonic usage.
+    Pattern: Registry. Performance: O(n²) vectorised; upgrade to spatial
+    hash grid at 500+ entities (M6+). Implements: ENT-001, NF-P-001.
     """
 
     def __init__(self) -> None:
         self._entities: Dict[str, Entity] = {}
+
+    # ### Lifecycle ###
 
     def add(self, entity: Entity) -> None:
         """
@@ -209,28 +189,74 @@ class EntityManager:
         """
         if entity.entity_id in self._entities:
             raise ValueError(
-                f"Duplicate entity_id '{entity.entity_id}' — "
-                "each entity must have a unique ID."
+                f"Duplicate entity_id '{entity.entity_id}'."
             )
         self._entities[entity.entity_id] = entity
 
     def remove(self, entity_id: str) -> None:
-        """Deregister entity *entity_id*. No-op if not found."""
+        """Deregister entity_id. No-op if not found."""
         self._entities.pop(entity_id, None)
 
     def get(self, entity_id: str) -> Optional[Entity]:
         """Return entity by *entity_id*, or ``None`` if not found."""
         return self._entities.get(entity_id)
 
+    # ### Batch step ###
+
     def step_all(self, dt: float) -> None:
         """
-        Call ``step(dt)`` on every entity.
+        Build StepContexts then dispatch step(dt, ctx) to all living entities.
+
+        Neighbour positions are from time t (pre-update), ensuring
+        social forces are computed on a consistent state snapshot.
+
+        Parameters
+        ----------
+        dt : float
+            Simulation timestep (SIM-001).
+        """
+        living = self.living()
+        if not living:
+            return
+        contexts = self._build_contexts(living)
+        for entity in living:
+            entity.step(dt, contexts[entity.entity_id])
+
+    def _build_contexts(self, entities: List[Entity]) -> Dict[str, StepContext]:
+        """
+        Vectorised O(n²) neighbour search using numpy dot-product distances.
+
+        Parameters
+        ----------
+        entities : list[Entity]
+            Snapshot of living entities (positions frozen for this step).
 
         Dead entities short-circuit inside ``Entity.step()`` — no
         separate filter needed here.
+
+        Returns
+        -------
+        dict[str, StepContext]
         """
-        for entity in self._entities.values():
-            entity.step(dt)
+        n = len(entities)
+        radius_sq = _D.NEIGHBOR_RADIUS_M ** 2
+
+        # (n, 2) position matrix for vectorised distance computation
+        positions = np.array([e.position[:2] for e in entities])
+
+        contexts: Dict[str, StepContext] = {}
+        for i, entity in enumerate(entities):
+            diffs = positions - positions[i]          # (n, 2)
+            # einsum "ij,ij->i" computes row-wise dot product = squared distances
+            sq_dists = np.einsum("ij,ij->i", diffs, diffs)  # (n,)
+            # Exclude self (sq_dist==0) and entities beyond radius
+            mask = (sq_dists < radius_sq) & (sq_dists > 0.0)
+            neighbours: List[Entity] = [entities[j] for j in range(n) if mask[j]]
+            contexts[entity.entity_id] = StepContext(neighbors=neighbours)
+
+        return contexts
+
+    # ### Queries ###
 
     def all(self) -> List[Entity]:
         """Return a snapshot list of all registered entities (living + dead)."""
