@@ -41,6 +41,8 @@ from sim3dves.entities.vehicle import (
 from sim3dves.viz.debug_plot import DebugPlot
 from sim3dves.maps.road_network import RoadNetwork
 
+# from line_profiler import LineProfiler
+
 _D = SimDefaults()
 
 WORLD_X, WORLD_Y = 600.0, 600.0
@@ -129,6 +131,7 @@ def main() -> None:
             # Real-time pacing: sleep any unused budget in this dt window
             elapsed = time.perf_counter() - wall_start
             remaining = config.dt - elapsed
+            print(remaining)
             if remaining > 0.0:
                 time.sleep(remaining)
 
@@ -142,4 +145,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    '''lp = LineProfiler()
+    lp.add_function(main)
+    lp.run('main()')
+    lp.print_stats()'''
     main()

@@ -58,7 +58,7 @@ class SimDefaults:
 
     # ### Simulation clock (SIM-001) ###
     SIM_DT_S: float = 0.1              # Default timestep (seconds)
-    SIM_DURATION_S: float = 20.0       # Default scenario duration (seconds)
+    SIM_DURATION_S: float = 10.0       # Default scenario duration (seconds)
     SIM_SEED: int = 42                 # Default RNG seed (SIM-003)
 
     # ### Logger (LOG-001) ###
