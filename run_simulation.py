@@ -49,19 +49,16 @@ from sim3dves.maps.road_network import RoadNetwork
 _D = SimDefaults()
 
 # ### Scenario constants ###
-WORLD_X, WORLD_Y = 600.0, 600.0
-GRID_ROWS, GRID_COLS, GRID_SPACING_M = 6, 6, 100.0
-GRID_ORIGIN = np.array([50.0, 50.0])
-NUM_WHEELED, NUM_TRACKED, NUM_PEDESTRIANS = 12, 5, 40
-NUM_UAVS = 4   # UAV-004: configurable multi-UAV count
+WORLD_X, WORLD_Y = _D.WORLD_EXTENT_X_M, _D.WORLD_EXTENT_Y_M  # can overide 600.0, 600.0
+GRID_ROWS, GRID_COLS, GRID_SPACING_M = _D.GRID_ROWS, _D.GRID_COLS, _D.GRID_SPACING_M  # can overide 6, 6, 100.0
+GRID_ORIGIN = _D.GRID_ORIGIN  # can overide np.array([50.0, 50.0])
+NUM_WHEELED = _D.NUM_WHEELED  # can overide 12
+NUM_TRACKED = _D.NUM_TRACKED  # can overide 5
+NUM_PEDESTRIANS = _D.NUM_PEDESTRIANS  # can overide 40
+NUM_UAVS = _D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
 
 # NFZ cylinders placed to exercise FLR-001 avoidance
-NFZ_DEFINITIONS = [
-    # (centre_x, centre_y, radius_m, alt_max_m)
-    (200.0, 300.0, 60.0, 200.0),
-    (450.0, 150.0, 50.0, 150.0),
-    (400.0, 450.0, 70.0, 300.0),
-]
+NFZ_DEFINITIONS = _D.NFZ_DEFINITIONS
 
 # Step at which UAV-0 is cued to orbit the first EOI pedestrian (FLR-009)
 CUE_ORBIT_STEP: int = 30
@@ -104,9 +101,9 @@ def main() -> None:
 
     # ### Seeded RNG for deterministic spawning (SIM-003) ###
     rng = np.random.default_rng(config.seed)
-    node_ids = road_network.node_ids()
 
     # ### Wheeled vehicles (VEH-001, VEH-003) ###
+    node_ids = road_network.node_ids()
     kin_w = VehicleKinematics()
     for i in range(NUM_WHEELED):
         nid = node_ids[int(rng.integers(0, len(node_ids)))]
@@ -137,20 +134,20 @@ def main() -> None:
     for i in range(NUM_PEDESTRIANS):
         # XY: random within world extent; Z: snapped to terrain (Req-7)
         xy = rng.random(2) * world.extent
-        position = world.snap_to_terrain(np.array([xy[0], xy[1], 0.0]))
+        pos = world.snap_to_terrain(np.array([xy[0], xy[1], 0.0]))
 
         # Random initial velocity direction; speed is normalized inside entity
         velocity = rng.standard_normal(3)
         is_eoi = (i % 10 == 0)
         ped = PedestrianEntity(
             entity_id=str(uuid.uuid4()),
-            position=position,
+            position=pos,
             velocity=velocity,
             is_eoi=is_eoi,
         )
         sim.add_entity(ped)
         if is_eoi and eoi_ped_pos is None:
-            eoi_ped_pos = position.copy()   # Capture for FLR-009 demo
+            eoi_ped_pos = pos.copy()   # Capture for FLR-009 demo
 
     # ### UAVs (UAV-001..005, FLR-001..010) ###
     # Distribute three search patterns and one extra LAWNMOWER
@@ -162,9 +159,9 @@ def main() -> None:
     ]
     uav_entities: list[UAVEntity] = []
     for i in range(NUM_UAVS):
-        # Spawn at different quadrant centres at cruise altitude
-        spawn_x = float(rng.uniform(100.0, 500.0))
-        spawn_y = float(rng.uniform(100.0, 500.0))
+        # Spawn UAVs at cruise altitude
+        spawn_x = float(rng.uniform(0.0, world.extent[0]))
+        spawn_y = float(rng.uniform(0.0, world.extent[1]))
         pos = np.array([spawn_x, spawn_y, _D.UAV_CRUISE_ALT_M])
         uav = UAVEntity(
             entity_id=f"uav-{i:02d}",
@@ -202,8 +199,9 @@ def main() -> None:
 
     with sim.logger:
         for step in range(steps):
-            wall_start = time.perf_counter()
-            sim.step()
+            wall_start = time.perf_counter()  # wall means the real tine elapsed time
+            elapsed_step = sim.step()
+            # print(f"Elapsed time in sim.step: {elapsed_step:.4f} sec")
 
             # FLR-009 demo: cue UAV-0 to orbit the first EOI pedestrian
             if step == CUE_ORBIT_STEP and eoi_ped_pos is not None and uav_entities:
@@ -227,7 +225,7 @@ def main() -> None:
             # Real-time pacing: sleep unused dt budget (SIM-006)
             elapsed = time.perf_counter() - wall_start
             remaining = config.dt - elapsed
-            print(remaining)
+            # print(remaining)
             if remaining > 0.0:
                 time.sleep(remaining)
 

@@ -113,13 +113,13 @@ class DebugPlot:
         world_y: float,
         road_network: Optional[RoadNetwork] = None,
         nfz_cylinders: Optional[List[NFZCylinder]] = None,
-        title: str = "3DVES -- Debug View",
+        title: str = "Sim3Dves - phase M3",
     ) -> None:
         # Guard against re-enabling interactive mode on repeated construction
         if not plt.isinteractive():
             plt.ion()
 
-        self._fig, self._ax = plt.subplots(figsize=(9, 9))
+        self._fig, self._ax = plt.subplots(figsize=(7.5, 7.5))
         # Set window title safely (backend may not support it)
         try:
             self._fig.canvas.manager.set_window_title(title)  # type: ignore[union-attr]

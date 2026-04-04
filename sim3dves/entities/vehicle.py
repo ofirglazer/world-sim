@@ -341,8 +341,7 @@ class WheeledVehicleEntity(VehicleEntity):
             self._waypoints = []
             return
 
-        dest_idx = int(self._rng.integers(0, len(candidates)))
-        dest_id = candidates[dest_idx]
+        dest_id = self._rng.choice(candidates)
 
         # A* pathfinding (VEH-003)
         path_ids = self._road_network.find_path(from_id, dest_id)

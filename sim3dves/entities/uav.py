@@ -203,11 +203,7 @@ class UAVEntity(Entity):
         self._low_fuel: bool = False
 
         # World spatial context
-        self._world_extent: np.ndarray = (
-            world_extent.astype(float)
-            if world_extent is not None
-            else np.array([600.0, 600.0])
-        )
+        self._world_extent: np.ndarray = world_extent.astype(float)
         self._alt_floor_m: float = float(alt_floor_m)   # FLR-002
         self._alt_ceil_m: float = float(alt_ceil_m)     # FLR-003
         self._nfz_cylinders: List[NFZCylinder] = nfz_cylinders or []
@@ -362,7 +358,7 @@ class UAVEntity(Entity):
         # 4. Flight rules applied after mode handler sets intent velocity
         self._apply_nfz_avoidance()                    # FLR-001
         self._enforce_altitude_velocity()              # FLR-002, FLR-003
-        if context is not None:
+        if context.neighbors:
             self._apply_separation(context)            # FLR-004
         if (
             self._autopilot_mode == AutopilotMode.WAYPOINT
@@ -442,7 +438,6 @@ class UAVEntity(Entity):
 
             # Horizontal speed: full speed unless very close (proximity brake)
             h_speed = min(self._kinematics.max_speed_mps, h_dist / dt)
-            h_speed = min(h_speed, self._kinematics.max_speed_mps)
             self.velocity[0] = math.cos(new_heading_rad) * h_speed
             self.velocity[1] = math.sin(new_heading_rad) * h_speed
 
@@ -666,12 +661,12 @@ class UAVEntity(Entity):
         bool
             True if geofence approach threshold is breached.
         """
-        m = _D.UAV_GEOFENCE_MARGIN_M
+        margin = _D.UAV_GEOFENCE_MARGIN_M
         return (
-            self.position[0] < m
-            or self.position[0] > self._world_extent[0] - m
-            or self.position[1] < m
-            or self.position[1] > self._world_extent[1] - m
+            self.position[0] < margin
+            or self.position[0] > self._world_extent[0] - margin
+            or self.position[1] < margin
+            or self.position[1] > self._world_extent[1] - margin
         )
 
     def _transition_to_rtb(self) -> None:
@@ -755,7 +750,7 @@ class UAVEntity(Entity):
         Strips run West→East and East→West alternately to minimise turns.
         """
         strip_w = _D.UAV_LAWNMOWER_STRIP_W_M
-        margin = _D.UAV_GEOFENCE_MARGIN_M
+        margin = _D.UAV_SEARCH_EDGE_M
         x_min = margin
         x_max = self._world_extent[0] - margin
         y_min = margin
@@ -786,7 +781,7 @@ class UAVEntity(Entity):
         per ring so the angular step is ≤ strip_width / radius.
         """
         strip_w = _D.UAV_SPIRAL_STRIP_W_M
-        margin = _D.UAV_GEOFENCE_MARGIN_M
+        margin = _D.UAV_SEARCH_EDGE_M
         cx = self._world_extent[0] / 2.0
         cy = self._world_extent[1] / 2.0
         max_radius = min(cx, cy) - margin
@@ -817,7 +812,7 @@ class UAVEntity(Entity):
         margin.  Uses the entity's seeded RNG (SIM-003).
         """
         n = _D.UAV_RANDOM_WALK_WAYPOINTS
-        margin = _D.UAV_GEOFENCE_MARGIN_M
+        margin = _D.UAV_SEARCH_EDGE_M
         z = self._cruise_altitude_m
 
         waypoints: List[np.ndarray] = []

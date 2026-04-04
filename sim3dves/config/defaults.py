@@ -13,6 +13,7 @@ M3 additions: UAV kinematics, endurance, flight rules, search pattern
   parameters, wind model, deconfliction constants.
 """
 from dataclasses import dataclass
+import numpy
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,6 @@ class SimDefaults:
     PED_SPEED_MIN_MPS: float = 1.0  # Minimum pedestrian speed (m/s)
     PED_SPEED_MAX_MPS: float = 1.8  # Maximum pedestrian speed (m/s)
     PED_VELOCITY_NOISE_STD: float = 0.05  # Angular heading noise σ (radians/step)
-    PED_NUMBER: int = 40
 
     # ### Social Force (PED-003) ###
     SOCIAL_RADIUS_M: float = 5.0  # Repulsion cutoff distance (m)
@@ -48,6 +48,10 @@ class SimDefaults:
 
     # ### Road network (ENV-006) ###
     ROAD_SPEED_LIMIT_MPS: float = 13.9  # Default edge speed limit (~50 km/h)
+    GRID_ROWS: int = 6
+    GRID_COLS: int = 6
+    GRID_SPACING_M: float = 100.0
+    GRID_ORIGIN = numpy.array([50.0, 50.0])
 
     # ### EntityManager neighbor search (NF-P-001) ###
     # Used for pedestrian social-force context.  Ground entities ignore
@@ -55,8 +59,8 @@ class SimDefaults:
     NEIGHBOR_RADIUS_M: float = 10.0  # Ground entity search radius (m)
 
     # ### World (ENV-001) ###
-    WORLD_EXTENT_X_M: float = 200.0  # Default world width  (m)
-    WORLD_EXTENT_Y_M: float = 200.0  # Default world height (m)
+    WORLD_EXTENT_X_M: float = 600.0  # Default world width  (m)
+    WORLD_EXTENT_Y_M: float = 600.0  # Default world height (m)
     WORLD_ALT_FLOOR_M: float = 0.0  # Minimum AGL altitude (m)
     WORLD_ALT_CEIL_M: float = 500.0  # Maximum AGL altitude (m)
 
@@ -64,6 +68,12 @@ class SimDefaults:
     SIM_DT_S: float = 0.1  # Default timestep (seconds)
     SIM_DURATION_S: float = 60.0  # Default scenario duration (seconds)
     SIM_SEED: int = 42  # Default RNG seed (SIM-003)
+
+    # ### Populating sim ###
+    NUM_WHEELED: int = 12
+    NUM_TRACKED: int = 5
+    NUM_PEDESTRIANS: int = 40
+    NUM_UAVS: int = 4
 
     # ### Logger (LOG-001) ###
     LOG_FILE: str = "sim_log.jsonl"  # Default JSONL output path
@@ -108,7 +118,16 @@ class SimDefaults:
     UAV_LAWNMOWER_STRIP_W_M: float = 150.0  # Lawnmower strip width (m)
     UAV_SPIRAL_STRIP_W_M: float = 100.0  # Expanding-spiral radial increment (m)
     UAV_RANDOM_WALK_WAYPOINTS: int = 20  # Number of random-walk waypoints
+    UAV_SEARCH_EDGE_M: float = 180.0  # edge of search pattern = geofence margin + 2.36 * turn radius + some
 
     # ### EntityManager (M3: per-entity neighbor radius) ###
     # UAVs need a larger search radius for FLR-004 separation detection.
     UAV_NEIGHBOR_RADIUS_M: float = 200.0  # UAV neighbor search radius (m)
+
+    # ### UAV NFZ ###
+    NFZ_DEFINITIONS = [
+        # (center_x, center_y, radius_m, alt_max_m)
+        (200.0, 300.0, 60.0, 200.0),
+        (450.0, 150.0, 50.0, 150.0),
+        (400.0, 450.0, 70.0, 300.0),
+    ]
