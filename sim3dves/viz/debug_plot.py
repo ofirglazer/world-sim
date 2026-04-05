@@ -78,6 +78,7 @@ _NODE_COLOUR: str = "#757575"        # Road node colour
 _NFZ_FILL_COLOUR: str = "#FF0000"    # NFZ fill (alpha applied separately)
 _NFZ_EDGE_COLOUR: str = "#D32F2F"    # NFZ border colour
 _GEOFENCE_COLOUR: str = "#FF6F00"    # Geofence boundary colour
+_BACKGROUND_COLOUR: str = "#C0C0C0"  # Background classic silver color of the plot
 _HEADING_ALPHA: float = 0.70         # Arrow transparency
 _NFZ_ALPHA: float = 0.20             # NFZ fill transparency
 
@@ -122,6 +123,9 @@ class DebugPlot:
 
         # Reserve 6 % of figure height at the bottom for the Reset button
         self._fig, self._ax = plt.subplots(figsize=(9, 9))
+        self._ax.set_facecolor(_BACKGROUND_COLOUR)
+        self._world_x: float = float(world_x)
+        self._world_y: float = float(world_y)
         self._fig.subplots_adjust(bottom=0.07)
 
         try:
@@ -211,6 +215,38 @@ class DebugPlot:
                 facecolors="none", edgecolors=_SELECTED_COLOUR,
                 linewidths=3.0, zorder=6,
             )
+            # --- Highlight selected entity destination and lines ---
+            if sel.entity_type == EntityType.TRACKED_VEHICLE and sel._waypoints:
+                line_x = [sel.position[0]]
+                line_y = [sel.position[1]]
+
+                dest_pos = sel._waypoints[0][0], sel._waypoints[0][1]
+                self._ax.scatter(
+                    dest_pos[0], dest_pos[1],
+                    s=350, marker="o",
+                    facecolors="none", edgecolors=_SELECTED_COLOUR,
+                    linewidths=3.0, zorder=6,
+                )
+
+                line_x.append(dest_pos[0])
+                line_y.append(dest_pos[1])
+                self._ax.plot(line_x, line_y, linestyle='dashed', color=_SELECTED_COLOUR)
+
+            elif (sel.entity_type == EntityType.WHEELED_VEHICLE or sel.entity_type == EntityType.UAV) and sel._waypoints:
+                line_x = [sel.position[0]]
+                line_y = [sel.position[1]]
+                for idx in range(sel._waypoint_idx, len(sel._waypoints)):
+                    next_x = sel._waypoints[idx][0]
+                    next_y = sel._waypoints[idx][1]
+                    self._ax.scatter(
+                        next_x, next_y,
+                        s=350, marker="o",
+                        facecolors="none", edgecolors=_SELECTED_COLOUR,
+                        linewidths=3.0, zorder=6,
+                    )
+                    line_x.append(next_x)
+                    line_y.append(next_y)
+                self._ax.plot(line_x, line_y, linestyle='dashed', color=_SELECTED_COLOUR)
 
         # Living entities — colour and shape by type (NF-VIZ-002)
         for entity in living:
@@ -302,11 +338,12 @@ class DebugPlot:
         """
         speed = float(np.linalg.norm(entity.velocity[:2]))
         lines = [
-            f"ID     : {entity.entity_id[:16]}",
-            f"Type   : {entity.entity_type.name}",
-            f"State  : {entity.state.name}",
-            f"Speed  : {speed:.1f} m/s",
-            f"Pos    : ({entity.position[0]:.0f}, "
+            f"ID      : {entity.entity_id[:16]}",
+            f"Type    : {entity.entity_type.name}",
+            f"State   : {entity.state.name}",
+            f"Speed   : {speed:.1f} m/s",
+            f"Heading : {entity.heading:.0f}",
+            f"Pos     : ({entity.position[0]:.0f}, "
             f"{entity.position[1]:.0f}, {entity.position[2]:.0f})",
         ]
 

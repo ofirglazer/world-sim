@@ -1,5 +1,9 @@
 # world-sim
 
+## TODOs
+* TODO smooth pan movement
+* TODO UAV to reach waypoint 
+
 ## check
 * 
 
