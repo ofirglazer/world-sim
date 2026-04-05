@@ -10,7 +10,11 @@ NF-CE-002: Full type annotations.
 M2 additions: vehicle kinematics, social-force parameters,
   road-network speed limit, EntityManager neighbor-search radius.
 M3 additions: UAV kinematics, endurance, flight rules, search pattern
-  parameters, wind model, deconfliction constants.
+              parameters, wind model, deconfliction constants.
+M3 fixes    : Added UAV_CORNER_ESCAPE_MARGIN_M and UAV_SEARCH_MARGIN_M
+              (FLR-008, FLR-011) to deconflict search patterns from geofence.
+              World defaults (WORLD_ALT_FLOOR_M, WORLD_ALT_CEIL_M) are now
+              consumed by World.__init__ so they are no longer unused.
 """
 from dataclasses import dataclass
 import numpy
@@ -105,6 +109,20 @@ class SimDefaults:
     UAV_LOITER_RADIUS_M: float = 50.0  # Holding-pattern orbit radius (m)
     UAV_LOITER_SPEED_MPS: float = 10.0  # Loiter tangential speed (m/s)
 
+    # ### Corner-escape geometry (FLR-011) [NEW in M3 fix] ###
+    # At max_speed=25 m/s and turn_rate=30 deg/s the minimum turn radius is
+    # 25 / (30*pi/180) ~= 48 m.  A 135-degree corner escape arc travels
+    # (135/360)*2*pi*48 ~= 113 m.  UAV_CORNER_ESCAPE_MARGIN_M is rounded up
+    # to 120 m to add a small safety buffer.
+    UAV_CORNER_ESCAPE_MARGIN_M: float = 120.0  # Extra inner margin for corner turns (m)
+
+    # ### Search pattern safe boundary (FLR-008) [NEW in M3 fix] ###
+    # UAV_SEARCH_MARGIN_M = UAV_GEOFENCE_MARGIN_M + UAV_CORNER_ESCAPE_MARGIN_M
+    # All pattern waypoints must stay >= this distance from every world edge so
+    # the UAV can never trigger the geofence RTB rule while executing a normal
+    # search leg or end-of-strip turn.
+    UAV_SEARCH_MARGIN_M: float = 180.0         # = 60 + 120 (m)
+
     # ### Multi-UAV deconfliction (FLR-010) ###
     UAV_DECONFLICTION_ALT_STEP_M: float = 30.0  # SECONDARY altitude offset (m)
     UAV_SAME_ORBIT_THRESHOLD_M: float = 30.0  # Cue points this close → same orbit
@@ -118,7 +136,6 @@ class SimDefaults:
     UAV_LAWNMOWER_STRIP_W_M: float = 150.0  # Lawnmower strip width (m)
     UAV_SPIRAL_STRIP_W_M: float = 100.0  # Expanding-spiral radial increment (m)
     UAV_RANDOM_WALK_WAYPOINTS: int = 20  # Number of random-walk waypoints
-    UAV_SEARCH_EDGE_M: float = 180.0  # edge of search pattern = geofence margin + 2.36 * turn radius + some
 
     # ### EntityManager (M3: per-entity neighbor radius) ###
     # UAVs need a larger search radius for FLR-004 separation detection.
@@ -131,3 +148,10 @@ class SimDefaults:
         (450.0, 150.0, 50.0, 150.0),
         (400.0, 450.0, 70.0, 300.0),
     ]
+
+    # ### Visualiser interactive controls (NF-VIZ-008-015) ###
+    VIZ_ZOOM_RESET_KEY: str = "r"             # Keyboard shortcut to reset view
+    VIZ_DESELECT_KEY: str = "escape"          # Keyboard shortcut to deselect entity
+    VIZ_HIT_THRESHOLD_FRAC: float = 0.025     # Click hit-test radius as fraction of view width
+    VIZ_DRAG_THRESHOLD_PX: float = 5.0        # Pixel movement to distinguish drag from click
+    VIZ_PANEL_ALPHA: float = 0.80             # Inspection panel background transparency

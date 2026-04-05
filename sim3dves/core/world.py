@@ -9,6 +9,11 @@ M2 addition
 World now acts as a Facade over Terrain, AABB structures, NFZ volumes,
 *and* the road network — providing a single authoritative spatial API.
 
+M3 fix
+------
+World.__init__ default arguments for alt_floor_m and alt_ceil_m now
+reference SimDefaults.WORLD_ALT_FLOOR_M / WORLD_ALT_CEIL_M instead of
+bare literals, so those two constants are no longer unused (NF-M-006).
 
 Implements: ENV-001 through ENV-007.
 NF-CE-001: PEP8 compliant.
@@ -22,7 +27,10 @@ from typing import List, Optional
 
 import numpy as np
 
+from sim3dves.config.defaults import SimDefaults
 from sim3dves.maps.road_network import RoadNetwork
+
+_D = SimDefaults()
 
 # ### Structure primitives ###
 
@@ -133,15 +141,17 @@ class World:
     Spatial Facade over terrain, structures, NFZ volumes, and road network.
 
     M2: added ``road_network`` field (ENV-006, VEH-003).
+    M3 fix: default alt_floor_m and alt_ceil_m now sourced from SimDefaults
+    (WORLD_ALT_FLOOR_M / WORLD_ALT_CEIL_M) instead of bare literals (NF-M-006).
 
     Parameters
     ----------
     extent : np.ndarray
         [X_max, Y_max] world footprint in metres (ENV-001).
     alt_floor_m : float
-        UAV minimum AGL (FLR-002).
+        UAV minimum AGL (FLR-002).  Defaults to WORLD_ALT_FLOOR_M.
     alt_ceil_m : float
-        UAV maximum AGL (FLR-003).
+        UAV maximum AGL (FLR-003).  Defaults to WORLD_ALT_CEIL_M.
     structures : list[AABB], optional
         Opaque obstacles for LOS / occlusion checks (ENV-003).
     nfz_cylinders : list[NFZCylinder], optional
@@ -153,8 +163,8 @@ class World:
     def __init__(
         self,
         extent: np.ndarray,
-        alt_floor_m: float = 0.0,
-        alt_ceil_m: float = 500.0,
+        alt_floor_m: float = _D.WORLD_ALT_FLOOR_M,   # NF-M-006: no magic numbers
+        alt_ceil_m: float = _D.WORLD_ALT_CEIL_M,      # NF-M-006: no magic numbers
         structures: Optional[List[AABB]] = None,
         nfz_cylinders: Optional[List[NFZCylinder]] = None,
         road_network: Optional[RoadNetwork] = None,

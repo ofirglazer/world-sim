@@ -10,45 +10,49 @@ Demonstrates M2 features:
   - Global determinism via seeded RNGs (SIM-003).
 NF-CE-001..002 compliant.
 =================
-Demonstrates M3 features:
-  - UAVEntity: 3-D kinematics, autopilot FSM (WAYPOINT/LOITER/ORBIT/RTB).
-  - All flight rules FLR-001..010 active.
-  - NFZ cylinders: avoidance and JSONL violation logging.
+M3 scenario runner — demonstrates all M3 features:
+  - UAVEntity with 3-D kinematics and autopilot FSM.
+  - All flight rules FLR-001..011 active, including corner-escape (FLR-011).
+  - NFZ cylinders with turn-rate-limited avoidance (FLR-001 fix).
   - Multi-UAV deconfliction: PRIMARY/SECONDARY orbit roles (FLR-010).
-  - Cued slew: one UAV transitioned to ORBIT around EOI (FLR-009).
-  - Three search patterns: LAWNMOWER, EXPANDING_SPIRAL, RANDOM_WALK.
-  - NFZ circles and geofence boundary in visualiser (NF-VIZ-006 M3).
-  - All M2 features retained: wheeled/tracked vehicles, social force,
-    road network, real-time pacing.
+  - Cued slew: UAV-0 and UAV-1 cued to orbit EOI (FLR-009).
+  - Three search patterns with corrected safe-margin waypoints (FLR-008 fix).
+  - Interactive visualiser: zoom, pan, reset, entity inspection (NF-VIZ-008-015).
+  - All M2 features retained.
 
 NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
+NF-M-006: All numeric constants from SimDefaults (no magic numbers).
 """
 from __future__ import annotations
 
 import time
 import uuid
 from pathlib import Path
+
 import numpy as np
 
 from sim3dves.config.defaults import SimDefaults
 from sim3dves.core.engine import SimulationConfig, SimulationEngine
 from sim3dves.core.world import NFZCylinder, World
+from sim3dves.entities.base import EntityType
 from sim3dves.entities.pedestrian import PedestrianEntity
-from sim3dves.entities.uav import AutopilotMode, SearchPattern, UAVEntity
+from sim3dves.entities.uav import SearchPattern, UAVEntity
 from sim3dves.entities.vehicle import (
     TrackedVehicleEntity,
     VehicleKinematics,
     WheeledVehicleEntity,
 )
-from sim3dves.viz.debug_plot import DebugPlot
 from sim3dves.maps.road_network import RoadNetwork
+from sim3dves.viz.debug_plot import DebugPlot
 
 # from line_profiler import LineProfiler
 
 _D = SimDefaults()
 
-# ### Scenario constants ###
+# ### Scenario parameters (all sourced from _D or explicit overrides) ###
+# These are scenario-level overrides, not defaults; the larger world size is
+# intentional for M3 UAV coverage.  PED_NUMBER comes from SimDefaults (NF-M-006).
 WORLD_X, WORLD_Y = _D.WORLD_EXTENT_X_M, _D.WORLD_EXTENT_Y_M  # can overide 600.0, 600.0
 GRID_ROWS, GRID_COLS, GRID_SPACING_M = _D.GRID_ROWS, _D.GRID_COLS, _D.GRID_SPACING_M  # can overide 6, 6, 100.0
 GRID_ORIGIN = _D.GRID_ORIGIN  # can overide np.array([50.0, 50.0])
@@ -60,12 +64,12 @@ NUM_UAVS = _D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
 # NFZ cylinders placed to exercise FLR-001 avoidance
 NFZ_DEFINITIONS = _D.NFZ_DEFINITIONS
 
-# Step at which UAV-0 is cued to orbit the first EOI pedestrian (FLR-009)
+# Step at which UAV-0/1 are cued to orbit the first EOI pedestrian (FLR-009)
 CUE_ORBIT_STEP: int = 30
 
 
 def build_nfz_cylinders() -> list:
-    """Construct NFZCylinder instances from the scenario definition table."""
+    """Construct NFZCylinder instances from the scenario table."""
     return [
         NFZCylinder(
             center_xy=np.array([cx, cy]),
@@ -130,7 +134,7 @@ def main() -> None:
         ))
 
     # ### Pedestrians (PED-001..003, Req-7) ###
-    eoi_ped_pos: np.ndarray | None = None   # Track first EOI pedestrian for cue
+    eoi_ped_pos: np.ndarray | None = None
     for i in range(NUM_PEDESTRIANS):
         # XY: random within world extent; Z: snapped to terrain (Req-7)
         xy = rng.random(2) * world.extent
@@ -160,8 +164,8 @@ def main() -> None:
     uav_entities: list[UAVEntity] = []
     for i in range(NUM_UAVS):
         # Spawn UAVs at cruise altitude
-        spawn_x = float(rng.uniform(0.0, world.extent[0]))
-        spawn_y = float(rng.uniform(0.0, world.extent[1]))
+        spawn_x = float(rng.uniform(0.0, world.extent[0]))  # consider 200.0, 400.0 for spawn
+        spawn_y = float(rng.uniform(0.0, world.extent[1]))  # consider 200.0, 400.0 for spawn
         pos = np.array([spawn_x, spawn_y, _D.UAV_CRUISE_ALT_M])
         uav = UAVEntity(
             entity_id=f"uav-{i:02d}",
@@ -186,8 +190,9 @@ def main() -> None:
         f"{NUM_PEDESTRIANS} peds | {NUM_UAVS} UAVs | "
         f"{len(nfz_cylinders)} NFZs | {len(road_network)} road nodes"
     )
+    print("Controls: scroll=zoom | drag=pan | R=reset | click=select | Esc=deselect")
 
-    # ### Visualiser (with NFZ circles and geofence boundary, M3) ###
+    # ### Visualiser (M3 interactive, NF-VIZ-008..015) ###
     plot = DebugPlot(
         WORLD_X, WORLD_Y,
         road_network=road_network,
@@ -203,22 +208,18 @@ def main() -> None:
             elapsed_step = sim.step()
             # print(f"Elapsed time in sim.step: {elapsed_step:.4f} sec")
 
-            # FLR-009 demo: cue UAV-0 to orbit the first EOI pedestrian
-            if step == CUE_ORBIT_STEP and eoi_ped_pos is not None and uav_entities:
-                uav_entities[0].cue_orbit(
-                    center_xy=eoi_ped_pos[:2],
-                    radius_m=_D.UAV_ORBIT_RADIUS_M,
-                    altitude_m=_D.UAV_CRUISE_ALT_M,
-                )
-                # Cue UAV-1 to same point to trigger FLR-010 deconfliction
-                if len(uav_entities) > 1:
-                    uav_entities[1].cue_orbit(
+            # FLR-009: cue two UAVs to orbit the first EOI at step 30
+            if step == CUE_ORBIT_STEP and eoi_ped_pos is not None:
+                for idx in range(min(2, len(uav_entities))):
+                    uav_entities[idx].cue_orbit(
                         center_xy=eoi_ped_pos[:2],
                         radius_m=_D.UAV_ORBIT_RADIUS_M,
                         altitude_m=_D.UAV_CRUISE_ALT_M,
                     )
-                print(f"  Step {step}: UAV-0 and UAV-1 cued to orbit EOI at "
-                      f"({eoi_ped_pos[0]:.0f}, {eoi_ped_pos[1]:.0f})")
+                print(
+                    f"  Step {step}: UAV-0/1 cued to orbit EOI at "
+                    f"({eoi_ped_pos[0]:.0f}, {eoi_ped_pos[1]:.0f})"
+                )
 
             plot.render(sim.entities.living(), sim_time=sim.sim_time)
 
@@ -229,14 +230,11 @@ def main() -> None:
             if remaining > 0.0:
                 time.sleep(remaining)
 
-    alive = len(sim.entities.living())
-    uavs_alive = len(sim.entities.by_type(
-        __import__("sim3dves.entities.base", fromlist=["EntityType"]).EntityType.UAV
-    ))
+    alive_uavs = len(sim.entities.by_type(EntityType.UAV))
     print(
         f"\nSimulation complete."
         f"  Steps: {sim.step_idx}"
-        f"  Alive: {alive} (UAVs: {uavs_alive})"
+        f"  Alive: {len(sim.entities.living())} (UAVs: {alive_uavs})"
         f"  Sim time: {sim.sim_time:.1f}s"
         f"  Log: {config.log_file}"
     )

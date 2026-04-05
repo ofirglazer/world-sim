@@ -173,6 +173,23 @@ class VehicleEntity(Entity):
         self.position[1] += self.velocity[1] * dt
         self.position[2] = 0.0  # VEH-007: terrain lock (flat terrain)
 
+    @property
+    def current_destination(self) -> "np.ndarray | None":
+        """
+        Return the current target waypoint as [x, y, z], or None (NF-VIZ-011).
+
+        Used by the inspection panel to display where this vehicle is heading.
+        Returns None when the path is exhausted or no plan has been computed.
+
+        Returns
+        -------
+        np.ndarray or None
+            3-D waypoint position in metres, or None if no active waypoint.
+        """
+        if self._waypoint_idx < len(self._waypoints):
+            return self._waypoints[self._waypoint_idx]
+        return None
+
     # ### Abstract path-planning hook ###
 
     @abstractmethod
@@ -215,7 +232,7 @@ class VehicleEntity(Entity):
         desired_rad = math.atan2(float(diff[1]), float(diff[0]))
         current_rad = math.radians(self.heading)
 
-        # Shortest angular difference in (-π, π]
+        # Shortest angular difference in (-pi, pi]
         delta_rad = desired_rad - current_rad
         delta_rad = (delta_rad + math.pi) % (2.0 * math.pi) - math.pi
 
@@ -226,7 +243,7 @@ class VehicleEntity(Entity):
         new_heading_rad = current_rad + delta_rad
         self.heading = math.degrees(new_heading_rad) % 360.0
 
-        # Proximity braking: decelerate when stopping distance ≥ remaining dist
+        # Proximity braking: decelerate when stopping distance >= remaining dist
         stopping_dist = (self._speed ** 2) / (2.0 * self._kinematics.decel_mps2 + 1e-9)
         if dist < stopping_dist:
             self._speed = max(
@@ -268,7 +285,7 @@ class WheeledVehicleEntity(VehicleEntity):
     """
     Wheeled vehicle that follows the road network via A* pathfinding (VEH-001).
 
-    Path-planning strategy: find nearest road node → A* to random destination.
+    Path-planning strategy: find nearest road node -> A* to random destination.
     On arrival, a new random destination is selected (autonomous patrol).
 
     Parameters
@@ -421,11 +438,7 @@ class TrackedVehicleEntity(VehicleEntity):
             rng=rng or np.random.default_rng(),
         )
         # Default to a nominal 1000 × 1000 m world if not provided
-        self._world_extent: np.ndarray = (
-            world_extent.astype(float)
-            if world_extent is not None
-            else np.array([1000.0, 1000.0])
-        )
+        self._world_extent: np.ndarray = (world_extent.astype(float))
         self._off_road_factor: float = float(off_road_factor)
 
     def _effective_max_speed(self) -> float:
