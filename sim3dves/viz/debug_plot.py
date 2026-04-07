@@ -50,6 +50,7 @@ import numpy as np
 from sim3dves.config.defaults import SimDefaults
 from sim3dves.core.world import NFZCylinder
 from sim3dves.entities.base import Entity, EntityType
+from sim3dves.entities.uav import AutopilotMode
 from sim3dves.maps.road_network import RoadNetwork
 
 _D = SimDefaults()
@@ -216,11 +217,18 @@ class DebugPlot:
                 linewidths=3.0, zorder=6,
             )
             # --- Highlight selected entity destination and lines ---
-            if sel.entity_type == EntityType.TRACKED_VEHICLE and sel._waypoints:
+            uav_waypoints = sel.entity_type == EntityType.UAV and sel.autopilot_mode == AutopilotMode.WAYPOINT
+            uav_one_point = sel.entity_type == EntityType.UAV and (sel.autopilot_mode == AutopilotMode.ORBIT or sel.autopilot_mode == AutopilotMode.RTB)
+
+            if sel.entity_type == (EntityType.TRACKED_VEHICLE and sel._waypoints) or uav_one_point:
                 line_x = [sel.position[0]]
                 line_y = [sel.position[1]]
 
-                dest_pos = sel._waypoints[0][0], sel._waypoints[0][1]
+                if uav_one_point:
+                    dest_pos = sel.current_destination[0], sel.current_destination[1]
+                else:
+                    dest_pos = sel._waypoints[0][0], sel._waypoints[0][1]
+
                 self._ax.scatter(
                     dest_pos[0], dest_pos[1],
                     s=350, marker="o",
@@ -232,7 +240,7 @@ class DebugPlot:
                 line_y.append(dest_pos[1])
                 self._ax.plot(line_x, line_y, linestyle='dashed', color=_SELECTED_COLOUR)
 
-            elif (sel.entity_type == EntityType.WHEELED_VEHICLE or sel.entity_type == EntityType.UAV) and sel._waypoints:
+            elif (sel.entity_type == EntityType.WHEELED_VEHICLE or uav_waypoints) and sel._waypoints:
                 line_x = [sel.position[0]]
                 line_y = [sel.position[1]]
                 for idx in range(sel._waypoint_idx, len(sel._waypoints)):
@@ -359,6 +367,10 @@ class DebugPlot:
             mode = getattr(entity, "autopilot_mode", None)
             if mode is not None:
                 lines.append(f"Mode   : {mode.name}")
+
+            search_pattern = getattr(entity, "_search_pattern", None)
+            if search_pattern is not None:
+                lines.append(f"Pattern: {search_pattern.name}")
 
             endurance = getattr(entity, "endurance_remaining_s", None)
             if endurance is not None:

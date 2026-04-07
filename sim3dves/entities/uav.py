@@ -12,13 +12,11 @@ Design Patterns
 
 Autopilot Modes (UAV-005)
 --------------------------
-WAYPOINT      — Following a search-pattern waypoint list (FLR-008).
-LOITER        — Holding orbit around current position (no waypoints).
-ORBIT         — Orbiting a payload-cued point at configurable radius/altitude
-                (FLR-009); deconfliction assigns PRIMARY/SECONDARY role (FLR-010).
-RTB           — Returning to launch position; triggered by low fuel (FLR-006)
-                or geofence approach (FLR-005).
-EMERGENCY_LAND— Descending to terrain and shutting down.
+WAYPOINT      -- Following a search-pattern waypoint list (FLR-008).
+LOITER        -- Holding orbit around current position.
+ORBIT         -- Orbiting a payload-cued point (FLR-009); PRIMARY/SECONDARY (FLR-010).
+RTB           -- Returning to base (FLR-005, FLR-006).
+EMERGENCY_LAND-- Controlled descent and shutdown.
 
 Flight Rules Implemented
 ------------------------
@@ -74,16 +72,12 @@ _D = SimDefaults()
 # ### Enumerations ###
 
 class AutopilotMode(Enum):
-    """
-    Autopilot FSM state catalogue (UAV-005).
-
-    Values use auto() to satisfy ENT-002 (Enum, not raw strings).
-    """
-    WAYPOINT = auto()  # Executing search-pattern route (FLR-008)
-    LOITER = auto()  # Holding orbit around current position
-    ORBIT = auto()  # Cued orbit around payload target (FLR-009)
-    RTB = auto()  # Return to base (FLR-005, FLR-006)
-    EMERGENCY_LAND = auto()  # Controlled descent and shutdown
+    """Autopilot FSM state catalogue (UAV-005)."""
+    WAYPOINT = auto()
+    LOITER = auto()
+    ORBIT = auto()
+    RTB = auto()
+    EMERGENCY_LAND = auto()
 
 
 class SearchPattern(Enum):
@@ -125,32 +119,20 @@ class UAVKinematics:
 
 class UAVEntity(Entity):
     """
-    Autonomous UAV with 3-D kinematics and a full autopilot FSM (UAV-001..005).
-
-    The UAV operates at a configurable cruise altitude, executes search
-    patterns (FLR-008), responds to payload cues (FLR-009), enforces all
-    airspace flight rules (FLR-001..010), and models fuel endurance (UAV-003).
-
-    Design Pattern — Template Method
-    ---------------------------------
-    Inherits Entity.step() which calls _update_behavior() then
-    _update_kinematics().  Autopilot mode dispatch is a lightweight State
-    pattern: each mode has a dedicated private handler method.
+    Autonomous UAV with 3-D kinematics and full autopilot FSM (UAV-001..005).
 
     Parameters
     ----------
     entity_id : str
         Globally unique identifier.
     position : np.ndarray
-        Initial 3-D position [x, y, z].  Z is overridden to cruise_altitude_m
-        at construction so the UAV starts at the correct altitude (UAV-001).
+        Initial 3-D position [x, y, z].  Z is overridden to cruise_altitude_m.
     heading : float
         Initial heading in degrees.
     launch_position : np.ndarray, optional
-        3-D [x, y, z] launch / home point for RTB (FLR-006).  Defaults to
-        the initial spawn position.
+        3-D [x, y, z] home point for RTB (FLR-006). Defaults to spawn position.
     kinematics : UAVKinematics, optional
-        Kinematic envelope.  Defaults to UAVKinematics() (from SimDefaults).
+        Kinematic envelope. Defaults to UAVKinematics().
     search_pattern : SearchPattern
         Initial search pattern (FLR-008).
     cruise_altitude_m : float
@@ -158,8 +140,7 @@ class UAVEntity(Entity):
     endurance_s : float
         Total flight endurance budget (s) (UAV-003).
     world_extent : np.ndarray, optional
-        [X_max, Y_max] in metres; used for search-pattern generation and
-        geofence checks (FLR-005).  Defaults to (600, 600).
+        [X_max, Y_max] used for pattern generation and geofence checks.
     alt_floor_m : float
         Minimum AGL (FLR-002).
     alt_ceil_m : float
@@ -167,14 +148,13 @@ class UAVEntity(Entity):
     nfz_cylinders : list[NFZCylinder], optional
         NFZ volumes for FLR-001 predictive avoidance.
     wind : np.ndarray, optional
-        Constant wind vector [vx, vy, vz] in m/s (FLR-007).
-        Defaults to (UAV_WIND_X_MPS, UAV_WIND_Y_MPS, UAV_WIND_Z_MPS).
+        Constant wind vector [vx, vy, vz] m/s (FLR-007).
     is_eoi : bool
         Entity of Interest flag.
     signature : float
         Optical/thermal contrast in [0, 1].
     rng : np.random.Generator, optional
-        Seeded RNG for random-walk waypoints and determinism (SIM-003).
+        Seeded RNG for random-walk waypoints (SIM-003).
     """
 
     def __init__(
@@ -196,9 +176,8 @@ class UAVEntity(Entity):
         signature: float = 0.5,
         rng: Optional[np.random.Generator] = None,
     ) -> None:
-        # UAV starts at cruise altitude (UAV-001: 3D space)
         pos3 = position.astype(float).copy()
-        pos3[2] = float(cruise_altitude_m)  # UAV-001: start at cruise altitude
+        pos3[2] = float(cruise_altitude_m)   # UAV-001: start at cruise altitude
 
         super().__init__(
             entity_id=entity_id,
@@ -210,7 +189,6 @@ class UAVEntity(Entity):
             signature=signature,
         )
 
-        # Kinematic envelope (UAV-002)
         self._kinematics: UAVKinematics = kinematics or UAVKinematics()
 
         # Endurance (UAV-003)
@@ -218,27 +196,32 @@ class UAVEntity(Entity):
         self._low_fuel: bool = False
 
         # World spatial context
-        self._world_extent: np.ndarray = world_extent.astype(float)
-        self._alt_floor_m: float = float(alt_floor_m)   # FLR-002
-        self._alt_ceil_m: float = float(alt_ceil_m)     # FLR-003
+        self._world_extent: np.ndarray = (
+            world_extent.astype(float)
+            if world_extent is not None
+            else np.array([600.0, 600.0])
+        )
+        self._alt_floor_m: float = float(alt_floor_m)    # FLR-002
+        self._alt_ceil_m: float = float(alt_ceil_m)      # FLR-003
         self._nfz_cylinders: List[NFZCylinder] = nfz_cylinders or []
         self._cruise_altitude_m: float = float(cruise_altitude_m)
 
         # Wind model (FLR-007)
-        if wind is not None:
-            self._wind: np.ndarray = wind.astype(float)
-        else:
-            self._wind = np.array(
+        self._wind: np.ndarray = (
+            wind.astype(float)
+            if wind is not None
+            else np.array(
                 [_D.UAV_WIND_X_MPS, _D.UAV_WIND_Y_MPS, _D.UAV_WIND_Z_MPS],
                 dtype=float,
             )
+        )
 
         # Navigation state
         self._search_pattern: SearchPattern = search_pattern
         self._waypoints: List[np.ndarray] = []
         self._waypoint_idx: int = 0
 
-        # Launch / home point for RTB (FLR-006)
+        # RTB home point (FLR-006)
         self._launch_position: np.ndarray = (
             launch_position.astype(float)
             if launch_position is not None
@@ -258,10 +241,29 @@ class UAVEntity(Entity):
         # Deconfliction role (FLR-010)
         self._deconfliction_role: str = "PRIMARY"
 
-        # Deterministic RNG for random-walk pattern (SIM-003)
+        # Deterministic RNG (SIM-003)
         self._rng: np.random.Generator = rng or np.random.default_rng()
 
-        # Initial autopilot mode (UAV-005)
+        # Bug 1 fix: physics-based arrival threshold (UAV-002, FLR-008).
+        # At maximum speed the minimum turning radius is v / omega where
+        # omega is the turn rate in rad/s.  The UAV can only guarantee
+        # arrival without overshoot if it starts the final approach from
+        # within a circle of diameter 2 * r_turn.  Using a smaller threshold
+        # means the UAV will overshoot the waypoint and circle back, never
+        # converging.  We take the larger of 2 * r_turn and the kinematic
+        # arrival_threshold_m field so the value can still be raised for tests.
+        _omega_rad_s: float = math.radians(self._kinematics.turn_rate_dps)
+        _r_turn: float = (
+            self._kinematics.max_speed_mps / _omega_rad_s
+            if _omega_rad_s > 1e-9
+            else 50.0
+        )
+        self._arrival_threshold_m: float = max(
+            2.0 * _r_turn,                        # physics minimum (diameter)
+            self._kinematics.arrival_threshold_m, # explicit override if larger
+        )
+
+        # Autopilot FSM (UAV-005)
         self._autopilot_mode: AutopilotMode = AutopilotMode.WAYPOINT
 
         # Heading snapshot taken at the top of every _update_behavior call.
@@ -274,7 +276,7 @@ class UAVEntity(Entity):
 
     @property
     def autopilot_mode(self) -> AutopilotMode:
-        """Current autopilot mode (UAV-005). Read-only; use mode methods to change."""
+        """Current autopilot mode (UAV-005)."""
         return self._autopilot_mode
 
     @property
@@ -307,7 +309,8 @@ class UAVEntity(Entity):
         """
         Return the current navigation target as [x, y, z], or None (NF-VIZ-011).
 
-        For WAYPOINT/RTB modes: the next waypoint.
+        For WAYPOINT modes: the next waypoint.
+        For RTB modes: the base point.
         For ORBIT mode: the orbit centre (2-D, promoted to 3-D with orbit altitude).
         For LOITER/EMERGENCY_LAND: None (holding position).
 
@@ -333,11 +336,11 @@ class UAVEntity(Entity):
         Returns
         -------
         float
-            UAV_NEIGHBOR_RADIUS_M — larger than the ground-entity default.
+            UAV_NEIGHBOR_RADIUS_M -- larger than the ground-entity default.
         """
         return _D.UAV_NEIGHBOR_RADIUS_M
 
-    # ### Public API (cues) ###
+    # ### Public cue API ###
 
     def cue_orbit(
         self,
@@ -348,9 +351,6 @@ class UAVEntity(Entity):
         """
         Transition to ORBIT mode around *center_xy* (FLR-009).
 
-        Can be called externally by a payload or scenario script to slew
-        the UAV onto a persistent orbit around a detected EOI.
-
         Parameters
         ----------
         center_xy : np.ndarray
@@ -358,14 +358,13 @@ class UAVEntity(Entity):
         radius_m : float
             Orbit radius in metres.
         altitude_m : float, optional
-            Orbit altitude AGL.  Defaults to current cruise altitude.
+            Orbit altitude AGL. Defaults to current cruise altitude.
         """
         self._orbit_center = center_xy[:2].astype(float)
         self._orbit_radius = float(radius_m)
         self._orbit_altitude = (
             float(altitude_m) if altitude_m is not None else self._cruise_altitude_m
         )
-        # Initialise orbit angle from current position relative to centre
         rel = self.position[:2] - self._orbit_center
         self._orbit_angle = math.atan2(float(rel[1]), float(rel[0]))
         self._autopilot_mode = AutopilotMode.ORBIT
@@ -393,7 +392,7 @@ class UAVEntity(Entity):
         dt : float
             Simulation timestep.
         context : StepContext, optional
-            Neighbour snapshot used for FLR-004 separation and FLR-010.
+            Neighbour snapshot used for FLR-004 and FLR-010.
         """
         # Snapshot heading before any mode-handler steering (FLR-001 fix)
         self._heading_step_start = self.heading
@@ -422,14 +421,16 @@ class UAVEntity(Entity):
         elif self._autopilot_mode == AutopilotMode.LOITER:
             self._do_loiter(dt)
         else:
-            # WAYPOINT mode
             self._do_waypoint(dt)
 
-        # 4. Flight rules applied after mode handler has set intent velocity
-        self._apply_nfz_avoidance(dt)                    # FLR-001 - turn-rate limited
-        self._enforce_altitude_velocity()              # FLR-002, FLR-003
-        if context is not None:
-            self._apply_separation(context)            # FLR-004
+        # 4. Flight rules (applied after mode handler has set intent velocity)
+        # nfz_active is True when avoidance steering fired this step.
+        # Separation is skipped when NFZ avoidance is active so the two
+        # corrections cannot produce conflicting turns (Issue 4 fix, FLR-001>FLR-004).
+        nfz_active: bool = self._apply_nfz_avoidance(dt)   # FLR-001
+        self._enforce_altitude_velocity()                   # FLR-002, FLR-003
+        if context is not None and not nfz_active:
+            self._apply_separation(context, dt)             # FLR-004
 
         # 5. Corner-escape / straight-edge geofence (FLR-011, FLR-005)
         if self._autopilot_mode != AutopilotMode.EMERGENCY_LAND:
@@ -453,19 +454,15 @@ class UAVEntity(Entity):
         Euler-integrate position; apply wind drift and altitude clamping (FLR-007).
 
         Steps: position += (velocity + wind) * dt, then clamp Z.
-        1. Position += (velocity + wind) × dt.
-        2. Clamp Z to [alt_floor_m, alt_ceil_m].
-        3. Zero vertical velocity if clamp engaged.
         """
-        # FLR-007: wind drift added to commanded velocity
-        effective_vel = self.velocity + self._wind
+        effective_vel = self.velocity + self._wind   # FLR-007: wind drift
         self.position += effective_vel * dt
 
         # FLR-002 / FLR-003: hard altitude clamping after integration
         if self.position[2] < self._alt_floor_m:
             self.position[2] = self._alt_floor_m
             if self.velocity[2] < 0.0:
-                self.velocity[2] = 0.0   # Stop downward velocity at floor
+                self.velocity[2] = 0.0
         elif self.position[2] > self._alt_ceil_m:
             self.position[2] = self._alt_ceil_m
             if self.velocity[2] > 0.0:
@@ -525,14 +522,7 @@ class UAVEntity(Entity):
     # ### Autopilot mode handlers (State pattern) ###
 
     def _do_waypoint(self, dt: float) -> None:
-        """
-        Navigate to the next search-pattern waypoint (FLR-008, UAV-005).
-
-        Generates a new waypoint list from the search pattern when the
-        current list is exhausted.  Transitions to LOITER if generation
-        fails (no world extent configured).
-        """
-        # (Re)plan if waypoints exhausted
+        """Navigate search-pattern waypoints (FLR-008, UAV-005)."""
         if self._waypoint_idx >= len(self._waypoints):
             self._waypoints = self._generate_search_waypoints()
             self._waypoint_idx = 0
@@ -544,12 +534,12 @@ class UAVEntity(Entity):
         diff = target - self.position
         dist = float(np.linalg.norm(diff))
 
-        # Arrival check
-        if dist < self._kinematics.arrival_threshold_m:
+        # Use the physics-based threshold (Bug 1 fix) so the UAV is far
+        # enough from the waypoint to complete its final turn without overshoot.
+        if dist < self._arrival_threshold_m:
             self._waypoint_idx += 1
             return
 
-        # Compute desired horizontal direction and steer with turn-rate limit
         h_diff = diff[:2]
         h_dist = float(np.linalg.norm(h_diff))
 
@@ -569,32 +559,88 @@ class UAVEntity(Entity):
 
     def _do_orbit(self, dt: float) -> None:
         """
-        Fly a circular orbit around ``_orbit_center`` (FLR-009, FLR-010).
+        Fly circular orbit around _orbit_center with radial convergence (FLR-009, FLR-010).
 
-        Tangential velocity provides smooth circular motion without
-        steering lag.  Altitude control climbs/descends toward orbit altitude.
+        Bug 2 fix — radial convergence
+        --------------------------------
+        The previous implementation used ``_orbit_radius`` (the *target* radius)
+        for the angular velocity calculation, regardless of how far the UAV
+        actually is from the orbit centre.  When the UAV enters ORBIT from a
+        distance different from the target radius (the common case — the UAV may
+        be anywhere in the world when cue_orbit() is called), this caused:
+          * Wrong angular velocity: too fast (UAV too far) or too slow (UAV too
+            close), so the orbit angle advanced at the wrong rate.
+          * No radial correction: the UAV stayed at its entry distance forever,
+            never converging to the target orbit circle.
 
-        SECONDARY UAVs (FLR-010) orbit at an altitude offset above PRIMARY.
+        The fix decomposes velocity into two orthogonal components each step:
+          * Tangential (CCW, perpendicular to radius) — set to UAV_ORBIT_SPEED_MPS
+            and computed from the *actual* current radius so the angular rate is
+            always geometrically consistent with the real position.
+          * Radial (toward / away from centre) — proportional controller that
+            drives the actual distance toward ``_orbit_radius`` over
+            UAV_ORBIT_RADIAL_CONVERGE_S seconds, capped at
+            UAV_ORBIT_RADIAL_SPEED_FRAC * max_speed_mps.
+
+        The orbit angle is advanced using the *actual* current radius so the
+        tangential velocity vector stays perpendicular to the true radius vector
+        throughout convergence.
         """
         if self._orbit_center is None:
-            # No cue defined — fall back to LOITER
             self._autopilot_mode = AutopilotMode.LOITER
             return
 
-        # Advance orbit angle: omega = v / r
-        angular_vel = _D.UAV_ORBIT_SPEED_MPS / max(self._orbit_radius, 1.0)
+        # Actual UAV-to-centre distance this step
+        to_center_xy = self.position[:2] - self._orbit_center
+        actual_radius = float(np.linalg.norm(to_center_xy))
+
+        # Guard: if somehow at the centre (shouldn't happen) push outward
+        if actual_radius < 1.0:
+            actual_radius = 1.0
+            to_center_xy = np.array([1.0, 0.0])
+
+        # Outward unit vector (from centre toward UAV)
+        radial_dir = to_center_xy / actual_radius
+
+        # Advance orbit angle using the *actual* radius so angular rate is
+        # geometrically consistent with the real position (Bug 2 fix).
+        angular_vel = _D.UAV_ORBIT_SPEED_MPS / actual_radius
         self._orbit_angle += angular_vel * dt
 
-        # Tangential velocity: perpendicular to radius vector, CCW positive
-        self.velocity[0] = -math.sin(self._orbit_angle) * _D.UAV_ORBIT_SPEED_MPS
-        self.velocity[1] = math.cos(self._orbit_angle) * _D.UAV_ORBIT_SPEED_MPS
+        # Tangential direction: CCW perpendicular to the outward radial vector.
+        # Computed from orbit_angle (equivalent to rotating radial_dir by +90 deg).
+        tangent_dir = np.array(
+            [-math.sin(self._orbit_angle), math.cos(self._orbit_angle)]
+        )
 
-        # FLR-010: SECONDARY orbits higher to maintain separation
+        # Radial P-controller: converge actual_radius -> _orbit_radius (Bug 2 fix).
+        # Positive radial_error means UAV is too close; move outward (+radial_dir).
+        # Negative means too far; move inward (-radial_dir).
+        radial_error = self._orbit_radius - actual_radius
+        v_radial_max = (
+            _D.UAV_ORBIT_RADIAL_SPEED_FRAC * self._kinematics.max_speed_mps
+        )
+        v_radial = float(np.clip(
+            radial_error / max(_D.UAV_ORBIT_RADIAL_CONVERGE_S, dt),
+            -v_radial_max,
+            v_radial_max,
+        ))
+
+        # Combine tangential (constant orbit speed) + radial (convergence)
+        self.velocity[0] = (
+            tangent_dir[0] * _D.UAV_ORBIT_SPEED_MPS
+            + radial_dir[0] * v_radial
+        )
+        self.velocity[1] = (
+            tangent_dir[1] * _D.UAV_ORBIT_SPEED_MPS
+            + radial_dir[1] * v_radial
+        )
+
+        # FLR-010: SECONDARY orbits higher to maintain vertical separation
         target_alt = self._orbit_altitude
         if self._deconfliction_role == "SECONDARY":
             target_alt += _D.UAV_DECONFLICTION_ALT_STEP_M
 
-        # Altitude control toward orbit altitude
         alt_error = target_alt - self.position[2]
         self.velocity[2] = float(np.clip(
             alt_error / max(dt, 0.1),
@@ -603,27 +649,18 @@ class UAVEntity(Entity):
         ))
 
     def _do_loiter(self, dt: float) -> None:
-        """
-        Hold a small circular orbit around the loiter centre.
-
-        The loiter centre is captured on first entry from the current
-        position.  Uses a reduced speed and smaller radius than full orbit.
-        """
-        # Capture loiter centre on mode entry
+        """Hold small circular orbit around loiter centre."""
         if self._loiter_center is None:
             self._loiter_center = self.position[:2].copy()
             rel = self.position[:2] - self._loiter_center
             self._loiter_angle = math.atan2(float(rel[1]), float(rel[0]))
 
-        # Advance loiter angle
         angular_vel = _D.UAV_LOITER_SPEED_MPS / max(_D.UAV_LOITER_RADIUS_M, 1.0)
         self._loiter_angle += angular_vel * dt
 
-        # Tangential velocity (reduced speed for holding pattern)
         self.velocity[0] = -math.sin(self._loiter_angle) * _D.UAV_LOITER_SPEED_MPS
         self.velocity[1] = math.cos(self._loiter_angle) * _D.UAV_LOITER_SPEED_MPS
 
-        # Altitude: hold cruise altitude
         alt_error = self._cruise_altitude_m - self.position[2]
         self.velocity[2] = float(np.clip(
             alt_error / max(dt, 0.1),
@@ -632,23 +669,15 @@ class UAVEntity(Entity):
         ))
 
     def _do_rtb(self, dt: float) -> None:
-        """
-        Fly directly to launch position (FLR-005, FLR-006).
-
-        Transitions to EMERGENCY_LAND on arrival at the launch point.
-        Uses full horizontal speed without proximity braking to ensure
-        the UAV reaches home before fuel runs out.
-        """
+        """Fly to launch position (FLR-005, FLR-006)."""
         diff = self._launch_position - self.position
         h_diff = diff[:2]
         h_dist = float(np.linalg.norm(h_diff))
 
-        # Arrival at launch point
         if h_dist < self._kinematics.arrival_threshold_m:
             self._autopilot_mode = AutopilotMode.EMERGENCY_LAND
             return
 
-        # Steer toward launch position at full horizontal speed
         if h_dist > 1e-6:
             desired_heading_rad = math.atan2(float(h_diff[1]), float(h_diff[0]))
             # RTB at full speed (UAV-002); _steer_toward_heading clamps turn rate
@@ -665,62 +694,151 @@ class UAVEntity(Entity):
         ))
 
     def _do_emergency_land(self, dt: float) -> None:
-        """
-        Controlled descent to terrain; kills entity on touchdown.
-
-        Horizontal motion is zeroed; the UAV descends at max descent rate.
-        Entity is killed when Z drops to within 1 m of the altitude floor.
-        """
+        """Controlled descent; entity killed on touchdown."""
         self.velocity[0] = 0.0
         self.velocity[1] = 0.0
         self.velocity[2] = -self._kinematics.descent_rate_mps
 
-        # Kill when close to ground (altitude floor ~= terrain)
         if self.position[2] <= self._alt_floor_m + 1.0:
             self.kill()
 
     # ### Flight rule helpers ###
 
-    def _apply_nfz_avoidance(self, dt: float) -> None:
+    def _apply_nfz_avoidance(self, dt: float) -> bool:
         """
-        Turn-rate-limited lateral heading deflection when lookahead hits any NFZ.
+        Two-horizon, proportional, tangential NFZ avoidance (FLR-001).
 
-        FIX (v1.2 / FLR-001): previous implementation wrote self.velocity directly,
-        bypassing UAV_TURN_RATE_DPS entirely (up to 1800 deg/s effective yaw rate).
-        Now delegates exclusively to _steer_toward_heading() which enforces the
-        turn-rate limit on every call (UAV-002).
+        Returns True when avoidance steering was applied this step (used by
+        _apply_separation to skip its heading correction, preventing the two
+        flight rules from producing conflicting turns — Issue 4 fix).
+
+        Two-horizon strategy (Issue 1 + Issue 2 fix)
+        ---------------------------------------------
+        Near horizon (UAV_NFZ_NEAR_LOOKAHEAD_S ~ 1.5 s):
+            Emergency full-strength avoidance applied whenever the close-range
+            lookahead point is inside any NFZ.  This catches NFZs that become
+            proximate after a turn that was steered by the far-horizon check —
+            the 4 s planning horizon no longer fires once the UAV has turned
+            away, but the 1.5 s emergency horizon keeps firing until truly clear.
+
+        Far horizon (UAV_NFZ_LOOKAHEAD_S ~ 4 s):
+            Proportional gentle steering scaled to the lookahead penetration
+            depth (Issue 3 fix).  When the lookahead just clips the NFZ edge,
+            the weight is near 0 and only a small nudge is applied; when the
+            lookahead passes near the NFZ centre, weight approaches 1.0 and
+            the UAV steers fully onto the tangential escape heading.  This
+            replaces the previous fixed 45-degree deflection that caused
+            constant aggressive turning far from any NFZ.
+
+        Tangential steering (Issue 3 fix)
+        ----------------------------------
+        The desired avoidance heading is the tangent to the NFZ circle that
+        requires the *smaller* turn from the current heading — the UAV arcs
+        around the NFZ on whichever side is closest to its current course.
+        This replaces the previous fixed "50% outward + 50% perp" blend which
+        always pointed roughly 135 degrees away from the current heading.
 
         Parameters
         ----------
         dt : float
-            Simulation timestep — required to compute the clamped heading delta.
+            Simulation timestep — forwarded to _steer_toward_heading (UAV-002).
+
+        Returns
+        -------
+        bool
+            True if avoidance steering was applied.
         """
-        lookahead = self.position + self.velocity * _D.UAV_NFZ_LOOKAHEAD_S
+        # ── 1. Near-horizon: emergency hard avoidance (Issue 2) ──────────────
+        near_look = self.position + self.velocity * _D.UAV_NFZ_NEAR_LOOKAHEAD_S
         for nfz in self._nfz_cylinders:
-            if not nfz.contains(lookahead):
+            if nfz.contains(near_look):
+                # NFZ is very close — apply full-strength tangential avoidance
+                desired_rad = self._nfz_tangent_heading_rad(nfz, weight=1.0)
+                self.heading = self._heading_step_start   # no compounding (UAV-002)
+                self._steer_toward_heading(desired_rad, dt)
+                return True
+
+        # ── 2. Far-horizon: proportional planning avoidance (Issue 1 + 3) ────
+        far_look = self.position + self.velocity * _D.UAV_NFZ_LOOKAHEAD_S
+        for nfz in self._nfz_cylinders:
+            if not nfz.contains(far_look):
                 continue
+            # How deep is the lookahead point inside this NFZ?
+            # dist_to_center == 0 means centre hit; == radius means edge touch.
+            lookahead_to_ctr = float(
+                np.linalg.norm(far_look[:2] - nfz.center_xy)
+            )
+            penetration = nfz.radius_m - lookahead_to_ctr       # 0 at edge, r at ctr
+            weight = float(np.clip(penetration / nfz.radius_m, 0.0, 1.0))
 
-            # Direction from NFZ centre to UAV (outward escape direction)
-            to_uav = self.position[:2] - nfz.center_xy
-            dist = float(np.linalg.norm(to_uav))
-            if dist < 1e-6:
-                dist = 1.0
-                to_uav = np.array([1.0, 0.0])
-            outward = to_uav / dist
+            desired_rad = self._nfz_tangent_heading_rad(nfz, weight=weight)
+            self.heading = self._heading_step_start   # no compounding (UAV-002)
+            self._steer_toward_heading(desired_rad, dt)
+            return True
 
-            # 50% outward + 50% perpendicular for smooth tangential avoidance
-            perp = np.array([-outward[1], outward[0]])
-            avoid = 0.5 * outward + 0.5 * perp
-            norm = float(np.linalg.norm(avoid))
-            if norm > 1e-9:
-                avoid /= norm
+        return False  # No NFZ avoidance fired this step
 
-            desired_heading_rad = math.atan2(float(avoid[1]), float(avoid[0]))
-            # FLR-001: restore pre-step heading so the avoidance turn does not
-            # compound on top of the mode-handler turn (UAV-002 turn-rate limit).
-            self.heading = self._heading_step_start
-            self._steer_toward_heading(desired_heading_rad, dt)
-            break  # One NFZ avoidance correction per step is sufficient
+    def _nfz_tangent_heading_rad(
+        self, nfz: NFZCylinder, weight: float
+    ) -> float:
+        """
+        Compute the desired avoidance heading as a blend of the current heading
+        and the tangential-escape heading (Issue 3 fix).
+
+        The tangential heading is the direction perpendicular to the
+        UAV→NFZ_centre vector, on whichever side requires the *smaller* turn
+        from the current heading.  This steers the UAV around the NFZ in a
+        smooth arc rather than deflecting it strongly outward.
+
+        Blending by *weight* (0 = keep heading, 1 = full tangent) means a
+        lookahead that barely clips the NFZ edge produces only a tiny nudge,
+        while a direct collision course produces full avoidance.
+
+        Parameters
+        ----------
+        nfz : NFZCylinder
+            The NFZ to avoid.
+        weight : float
+            Avoidance strength in [0, 1]; 0 = no deflection, 1 = full tangent.
+
+        Returns
+        -------
+        float
+            Desired heading in radians (ENU convention).
+        """
+        to_center = nfz.center_xy - self.position[:2]
+        dist = float(np.linalg.norm(to_center))
+        if dist < 1e-6:
+            # UAV is at NFZ centre — escape East (arbitrary safe direction)
+            to_center = np.array([1.0, 0.0])
+            dist = 1.0
+
+        to_center_norm = to_center / dist
+
+        # Two tangent directions: CCW (left) and CW (right) around the NFZ
+        tangent_ccw = np.array([-to_center_norm[1],  to_center_norm[0]])  # rotate +90°
+        tangent_cw  = np.array([ to_center_norm[1], -to_center_norm[0]])  # rotate -90°
+
+        heading_ccw = math.atan2(float(tangent_ccw[1]), float(tangent_ccw[0]))
+        heading_cw  = math.atan2(float(tangent_cw[1]),  float(tangent_cw[0]))
+
+        # Pick the tangent requiring the smaller turn from the pre-step heading
+        base_rad = math.radians(self._heading_step_start)
+
+        def _ang_dist(a: float, b: float) -> float:
+            """Shortest angular distance in [0, pi]."""
+            d = abs(a - b) % (2.0 * math.pi)
+            return min(d, 2.0 * math.pi - d)
+
+        if _ang_dist(base_rad, heading_ccw) <= _ang_dist(base_rad, heading_cw):
+            tangent_rad = heading_ccw
+        else:
+            tangent_rad = heading_cw
+
+        # Blend: weight=0 → base heading (no deflection), weight=1 → pure tangent
+        diff = tangent_rad - base_rad
+        diff = (diff + math.pi) % (2.0 * math.pi) - math.pi   # wrap to (-pi, pi]
+        return base_rad + diff * weight
 
     def _enforce_altitude_velocity(self) -> None:
         """Clamp vertical velocity to kinematic climb/descent limits (UAV-002)."""
@@ -730,57 +848,93 @@ class UAVEntity(Entity):
             self._kinematics.climb_rate_mps,
         ))
 
-    def _apply_separation(self, context: StepContext) -> None:
+    def _apply_separation(
+        self, context: StepContext, dt: float
+    ) -> None:
         """
-        Velocity correction to maintain ≥ UAV_SEPARATION_M from peer UAVs (FLR-004).
+        Heading-based separation to maintain >= UAV_SEPARATION_M from peers (FLR-004).
 
-        A repulsion force proportional to proximity is added to horizontal
-        velocity, then clamped back to max_speed_mps.
+        Issue 4 fix — Cartesian velocity addition replaced with heading steering
+        -------------------------------------------------------------------------
+        The previous implementation added a raw Cartesian force vector after NFZ
+        avoidance had already set a coherent heading-aligned velocity.  This caused
+        an implicit, uncontrolled heading rotation of up to ~39 degrees per step
+        (see analysis: 20 m/s additive force on a 25 m/s velocity vector), and it
+        bypassed the turn-rate limit entirely.
+
+        The new approach:
+        1. Accumulates the desired separation heading offset across all close peers.
+        2. Applies it via _steer_toward_heading() so the turn-rate limit (UAV-002)
+           is always respected and the velocity stays heading-aligned.
+        3. Is **skipped** when _apply_nfz_avoidance returned True (NFZ safety has
+           absolute priority; combining the two corrections risks negating the
+           NFZ avoidance turn).
+
+        Heading offset scaling: weight = (1 - dist/UAV_SEPARATION_M) * 0.4.
+        The 0.4 factor caps the separation contribution at 40% of the turn budget
+        per peer, keeping course disruption proportional and predictable.
 
         Parameters
         ----------
         context : StepContext
             Neighbour snapshot; only UAV entities are considered.
+        dt : float
+            Simulation timestep — required by _steer_toward_heading (UAV-002).
         """
+        total_offset_rad: float = 0.0
+
         for neighbor in context.neighbors:
             if neighbor.entity_type != EntityType.UAV:
-                continue   # Only UAV-UAV separation (FLR-004)
+                continue
             diff = self.position - neighbor.position
             dist3d = float(np.linalg.norm(diff))
             if 0.0 < dist3d < _D.UAV_SEPARATION_M:
-                # Repulsion strength: scales from max at 0 to 0 at threshold
-                strength = (
-                    (1.0 - dist3d / _D.UAV_SEPARATION_M)
-                    * self._kinematics.max_speed_mps
-                )
-                avoidance_dir = diff / dist3d
-                self.velocity[0] += avoidance_dir[0] * strength
-                self.velocity[1] += avoidance_dir[1] * strength
+                # Proximity weight: 1.0 at contact, 0.0 at separation threshold
+                proximity_weight = 1.0 - dist3d / _D.UAV_SEPARATION_M
 
-                # Clamp horizontal speed to kinematic limit after correction
-                h_speed = float(np.linalg.norm(self.velocity[:2]))
-                if h_speed > self._kinematics.max_speed_mps:
-                    scale = self._kinematics.max_speed_mps / h_speed
-                    self.velocity[0] *= scale
-                    self.velocity[1] *= scale
+                # Direction away from peer (XY plane only)
+                if dist3d > 1e-6:
+                    away_xy = diff[:2] / dist3d
+                else:
+                    away_xy = np.array([1.0, 0.0])
+                away_heading_rad = math.atan2(float(away_xy[1]), float(away_xy[0]))
+
+                # Signed angular offset from current heading toward the away direction
+                current_rad = math.radians(self.heading)
+                delta = away_heading_rad - current_rad
+                delta = (delta + math.pi) % (2.0 * math.pi) - math.pi
+
+                # Scale: max 40% of turn budget per close peer (Issue 4 fix)
+                total_offset_rad += delta * proximity_weight * 0.4
+
+        if abs(total_offset_rad) < 1e-6:
+            return
+
+        # Apply as a single turn-rate-limited heading correction (UAV-002)
+        desired_rad = math.radians(self.heading) + total_offset_rad
+        h_speed = float(np.linalg.norm(self.velocity[:2]))
+        if h_speed < 0.1:
+            h_speed = self._kinematics.max_speed_mps * 0.5
+        self._steer_toward_heading(desired_rad, dt, speed=h_speed)
 
     def _near_geofence(self) -> bool:
         """
-        Return True if the UAV is within UAV_GEOFENCE_MARGIN_M of any world edge.
+        Return True if UAV is within UAV_GEOFENCE_MARGIN_M of any SINGLE world edge.
 
-        Used to trigger RTB before boundary exit (FLR-005).
+        A single-edge approach triggers RTB (FLR-005).
+        When TWO adjacent edges are breached simultaneously, use _in_corner_pocket()
+        and apply corner-escape heading instead (FLR-011).
 
         Returns
         -------
         bool
-            True if geofence approach threshold is breached.
         """
-        margin = _D.UAV_GEOFENCE_MARGIN_M
+        m = _D.UAV_GEOFENCE_MARGIN_M
         return (
-            self.position[0] < margin
-            or self.position[0] > self._world_extent[0] - margin
-            or self.position[1] < margin
-            or self.position[1] > self._world_extent[1] - margin
+            self.position[0] < m
+            or self.position[0] > self._world_extent[0] - m
+            or self.position[1] < m
+            or self.position[1] > self._world_extent[1] - m
         )
 
     def _in_corner_pocket(self) -> bool:
@@ -797,8 +951,8 @@ class UAVEntity(Entity):
         bool
         """
         m = _D.UAV_GEOFENCE_MARGIN_M
-        near_west = self.position[0] < m
-        near_east = self.position[0] > self._world_extent[0] - m
+        near_west  = self.position[0] < m
+        near_east  = self.position[0] > self._world_extent[0] - m
         near_south = self.position[1] < m
         near_north = self.position[1] > self._world_extent[1] - m
         # Corner = simultaneously near ONE horizontal AND ONE vertical boundary
@@ -861,7 +1015,6 @@ class UAVEntity(Entity):
         context : StepContext, optional
             Neighbour snapshot.
         """
-        # Only relevant in ORBIT mode
         if self._autopilot_mode != AutopilotMode.ORBIT or context is None:
             self._deconfliction_role = "PRIMARY"
             return
@@ -869,15 +1022,12 @@ class UAVEntity(Entity):
         for neighbor in context.neighbors:
             if neighbor.entity_type != EntityType.UAV:
                 continue
-            # Compare autopilot modes via public property (no private access)
             if not isinstance(neighbor, UAVEntity):
                 continue
             if neighbor.autopilot_mode != AutopilotMode.ORBIT:
                 continue
-            # Skip if neighbor has no valid orbit centre
             if neighbor._orbit_center is None or self._orbit_center is None:
                 continue
-            # Check if orbiting the same cue point
             centre_dist = float(
                 np.linalg.norm(neighbor._orbit_center - self._orbit_center)
             )
@@ -893,31 +1043,25 @@ class UAVEntity(Entity):
     # ### Search pattern generators (FLR-008) ###
 
     def _generate_search_waypoints(self) -> List[np.ndarray]:
-        """
-        Generate a waypoint list from the configured search pattern (FLR-008).
-
-        Returns
-        -------
-        list[np.ndarray]
-            3-D waypoints at cruise altitude.  Empty list if world extent
-            is not configured.
-        """
+        """Dispatch to the configured search pattern generator (FLR-008)."""
         if self._search_pattern == SearchPattern.LAWNMOWER:
             return self._generate_lawnmower()
         elif self._search_pattern == SearchPattern.EXPANDING_SPIRAL:
             return self._generate_expanding_spiral()
         else:
-            # RANDOM_WALK
             return self._generate_random_walk()
 
     def _generate_lawnmower(self) -> List[np.ndarray]:
         """
-        Parallel-strip lawnmower covering the world extent (FLR-008).
+        Parallel-strip lawnmower covering the world inside UAV_SEARCH_MARGIN_M.
 
-        Strips run West→East and East→West alternately to minimise turns.
+        FIX (v1.2 / FLR-008): previously used UAV_GEOFENCE_MARGIN_M, placing
+        waypoints exactly on the RTB trigger boundary.  Now uses
+        UAV_SEARCH_MARGIN_M = UAV_GEOFENCE_MARGIN_M + UAV_CORNER_ESCAPE_MARGIN_M,
+        giving the UAV room to turn without triggering FLR-005/FLR-011.
         """
         strip_w = _D.UAV_LAWNMOWER_STRIP_W_M
-        margin = _D.UAV_SEARCH_MARGIN_M  # FLR-008: inner search boundary
+        margin = _D.UAV_SEARCH_MARGIN_M   # FLR-008: inner search boundary
         x_min = margin
         x_max = self._world_extent[0] - margin
         y_min = margin
@@ -962,7 +1106,6 @@ class UAVEntity(Entity):
         radius = strip_w
         base_angle = 0.0
         while radius <= max_radius:
-            # More points for larger radii to maintain angular resolution
             n_points = max(8, int(2.0 * math.pi * radius / strip_w))
             for i in range(n_points):
                 angle = base_angle + i * 2.0 * math.pi / n_points
@@ -970,7 +1113,6 @@ class UAVEntity(Entity):
                 y = cy + radius * math.sin(angle)
                 waypoints.append(np.array([x, y, z]))
             radius += strip_w
-            # Slight rotation per ring for denser coverage
             base_angle += math.pi / 4.0
         return waypoints
 

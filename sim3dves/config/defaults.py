@@ -101,13 +101,31 @@ class SimDefaults:
     UAV_LOW_FUEL_THRESHOLD_S: float = 90.0  # Low-fuel alert threshold (FLR-006)
 
     # ### UAV flight rules ###
-    UAV_SEPARATION_M: float = 50.0  # Min inter-UAV separation (FLR-004)
-    UAV_NFZ_LOOKAHEAD_S: float = 10.0  # NFZ predictive check horizon (FLR-001)
-    UAV_GEOFENCE_MARGIN_M: float = 60.0  # Distance from boundary → avoidance (FLR-005)
-    UAV_ORBIT_RADIUS_M: float = 100.0  # Default orbit/cued-slew radius (FLR-009)
-    UAV_ORBIT_SPEED_MPS: float = 15.0  # Tangential orbit speed (m/s)
-    UAV_LOITER_RADIUS_M: float = 50.0  # Holding-pattern orbit radius (m)
-    UAV_LOITER_SPEED_MPS: float = 10.0  # Loiter tangential speed (m/s)
+    UAV_SEPARATION_M: float = 50.0            # Min inter-UAV separation (FLR-004)
+    # NFZ avoidance uses two lookahead horizons (FLR-001):
+    #   Near  (UAV_NFZ_NEAR_LOOKAHEAD_S) : emergency hard avoidance when an NFZ is
+    #           already close after a turn — fires at ~1.5 s / ~37 m which covers
+    #           the UAV minimum turning radius (48 m at 25 m/s / 30 dps). (Issue 2)
+    #   Far   (UAV_NFZ_LOOKAHEAD_S)      : planning horizon for early gentle steering.
+    #           4 s at 25 m/s = 100 m, enough for a 90-degree turn (3 s) plus margin.
+    #           Reduced from 10 s (250 m) which caused premature deflection far from
+    #           any NFZ, preventing UAVs from reaching waypoints. (Issue 1)
+    UAV_NFZ_NEAR_LOOKAHEAD_S: float = 1.5     # Emergency near-horizon (s) — Issue 2
+    UAV_NFZ_LOOKAHEAD_S: float = 4.0          # Planning far-horizon (s) — was 10.0
+    UAV_GEOFENCE_MARGIN_M: float = 60.0       # RTB trigger distance from boundary (FLR-005)
+    UAV_ORBIT_RADIUS_M: float = 100.0         # Default orbit/cued-slew radius (FLR-009)
+    UAV_ORBIT_SPEED_MPS: float = 15.0         # Tangential orbit speed (m/s)
+    UAV_LOITER_RADIUS_M: float = 50.0         # Holding-pattern orbit radius (m)
+    UAV_LOITER_SPEED_MPS: float = 10.0        # Loiter tangential speed (m/s)
+
+    # ### Orbit radius convergence (FLR-009 Bug 2 fix) ###
+    # Time constant used by the radial proportional controller to pull the UAV
+    # from its initial distance to the target orbit radius.  At 10 s the UAV
+    # closes a 100 m gap at 10 m/s (within the 40% speed budget below).
+    UAV_ORBIT_RADIAL_CONVERGE_S: float = 10.0   # Radial P-controller time-constant (s)
+    # Max radial speed as a fraction of max_speed_mps.  Keeps total orbit speed
+    # below max_speed even while converging.
+    UAV_ORBIT_RADIAL_SPEED_FRAC: float = 0.40   # Max radial speed fraction
 
     # ### Corner-escape geometry (FLR-011) [NEW in M3 fix] ###
     # At max_speed=25 m/s and turn_rate=30 deg/s the minimum turn radius is

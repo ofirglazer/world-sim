@@ -53,16 +53,17 @@ _D = SimDefaults()
 # ### Scenario parameters (all sourced from _D or explicit overrides) ###
 # These are scenario-level overrides, not defaults; the larger world size is
 # intentional for M3 UAV coverage.  PED_NUMBER comes from SimDefaults (NF-M-006).
-WORLD_X, WORLD_Y = _D.WORLD_EXTENT_X_M, _D.WORLD_EXTENT_Y_M  # can overide 600.0, 600.0
+WORLD_X = 2000  # _D.WORLD_EXTENT_X_M  # can overide 600.0
+WORLD_Y = 2000  # _D.WORLD_EXTENT_Y_M  # can overide 600.0
 GRID_ROWS, GRID_COLS, GRID_SPACING_M = _D.GRID_ROWS, _D.GRID_COLS, _D.GRID_SPACING_M  # can overide 6, 6, 100.0
 GRID_ORIGIN = _D.GRID_ORIGIN  # can overide np.array([50.0, 50.0])
-NUM_WHEELED = 1  #_D.NUM_WHEELED  # can overide 12
-NUM_TRACKED = 1  #_D.NUM_TRACKED  # can overide 5
-NUM_PEDESTRIANS = 1  #_D.NUM_PEDESTRIANS  # can overide 40
-NUM_UAVS = 4  #_D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
+NUM_WHEELED = 1  # _D.NUM_WHEELED  # can overide 12
+NUM_TRACKED = 1  # _D.NUM_TRACKED  # can overide 5
+NUM_PEDESTRIANS = 1  # _D.NUM_PEDESTRIANS  # can overide 40
+NUM_UAVS = 8  # _D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
 
 # NFZ cylinders placed to exercise FLR-001 avoidance
-NFZ_DEFINITIONS = _D.NFZ_DEFINITIONS
+NFZ_DEFINITIONS = []  # _D.NFZ_DEFINITIONS
 
 # Step at which UAV-0/1 are cued to orbit the first EOI pedestrian (FLR-009)
 CUE_ORBIT_STEP: int = 30
