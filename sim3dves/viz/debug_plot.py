@@ -87,6 +87,8 @@ _NFZ_ALPHA: float = 0.20             # NFZ fill transparency
 _SELECTION_THRESHOLD_PX: float = 15.0
 # Zoom factor per scroll tick (NF-VIZ-008)
 _ZOOM_FACTOR: float = 0.85
+# pan jump per key press
+_PAN_JUMP: int = 20
 
 
 class DebugPlot:
@@ -123,7 +125,7 @@ class DebugPlot:
             plt.ion()
 
         # Reserve 6 % of figure height at the bottom for the Reset button
-        self._fig, self._ax = plt.subplots(figsize=(9, 9))
+        self._fig, self._ax = plt.subplots(figsize=(7.5, 7.5))
         self._ax.set_facecolor(_BACKGROUND_COLOUR)
         self._world_x: float = float(world_x)
         self._world_y: float = float(world_y)
@@ -220,7 +222,7 @@ class DebugPlot:
             uav_waypoints = sel.entity_type == EntityType.UAV and sel.autopilot_mode == AutopilotMode.WAYPOINT
             uav_one_point = sel.entity_type == EntityType.UAV and (sel.autopilot_mode == AutopilotMode.ORBIT or sel.autopilot_mode == AutopilotMode.RTB)
 
-            if sel.entity_type == (EntityType.TRACKED_VEHICLE and sel._waypoints) or uav_one_point:
+            if (sel.entity_type == EntityType.TRACKED_VEHICLE and sel._waypoints) or uav_one_point:
                 line_x = [sel.position[0]]
                 line_y = [sel.position[1]]
 
@@ -527,12 +529,33 @@ class DebugPlot:
         Keyboard handler:
         * "r" / "R" -> reset view (NF-VIZ-009).
         * "escape"  -> deselect entity (NF-VIZ-013).
+        * arrow buttons  -> pan.
         """
         key = getattr(event, "key", "")
         if key in ("r", "R"):
             self._reset_view()
         elif key == "escape":
             self._selected_entity_id = None    # NF-VIZ-013
+        elif key == "up":
+            ylim = self._ax.get_ylim()
+            new_ylim = (ylim[0] + _PAN_JUMP, ylim[1] + _PAN_JUMP)
+            self._ylim = new_ylim
+            self._ax.set_ylim(new_ylim)
+        elif key == "down":
+            ylim = self._ax.get_ylim()
+            new_ylim = (ylim[0] - _PAN_JUMP, ylim[1] - _PAN_JUMP)
+            self._ylim = new_ylim
+            self._ax.set_ylim(new_ylim)
+        elif key == "right":
+            xlim = self._ax.get_xlim()
+            new_xlim = (xlim[0] + _PAN_JUMP, xlim[1] + _PAN_JUMP)
+            self._xlim = new_xlim
+            self._ax.set_xlim(new_xlim)
+        elif key == "left":
+            xlim = self._ax.get_xlim()
+            new_xlim = (xlim[0] - _PAN_JUMP, xlim[1] - _PAN_JUMP)
+            self._xlim = new_xlim
+            self._ax.set_xlim(new_xlim)
 
     def _reset_view(self) -> None:
         """
