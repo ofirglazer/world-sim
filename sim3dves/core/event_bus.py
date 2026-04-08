@@ -38,9 +38,6 @@ class EventType(Enum):
 class Event:
     """
     Immutable event record published on the bus.
-
-    FIX vs original: ``type: str`` replaced with ``event_type: EventType``
-    for compile-time type safety.
     """
     timestamp: float  # Simulation time (s) of the event
     event_type: EventType  # Typed event discriminator

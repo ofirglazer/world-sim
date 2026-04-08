@@ -9,6 +9,14 @@ M2 changes
 * EntityManager.step_all() builds per-entity StepContext via vectorised
   O(n²) neighbour search before any entity is updated (time-t consistency).
 
+M3 changes
+----------
+* Entity gains ``neighbor_radius_m`` property so subclasses (UAVEntity)
+  can declare a larger neighbourhood without global constant change.
+* EntityManager._build_contexts() now uses per-entity radii, enabling
+  UAVs to see each other at FLR-004 separation distance (50 m) while
+  pedestrians retain their tight social-force radius.
+
 Design Patterns:
 Template Method (Entity), Registry (EntityManager).
 NF-CE-001..005 compliant. Implements: ENT-001..004, SIM-001, NF-P-001.
@@ -140,6 +148,24 @@ class Entity(ABC):
     def _update_kinematics(self, dt: float) -> None:
         """Velocity integration + physics constraints (subclass responsibility)."""
 
+    # ### Neighbourhood radius (M3: per-entity override) ###
+
+    @property
+    def neighbor_radius_m(self) -> float:
+        """
+        Neighbourhood search radius used by EntityManager._build_contexts().
+
+        Subclasses override this to declare a larger or smaller search area.
+        Default is NEIGHBOR_RADIUS_M (tuned for pedestrian social force).
+        UAVEntity overrides to UAV_NEIGHBOR_RADIUS_M for FLR-004.
+
+        Returns
+        -------
+        float
+            Search radius in metres.
+        """
+        return _D.NEIGHBOR_RADIUS_M
+
     # ### Shared concrete helpers ###
 
     def _update_heading(self) -> None:
@@ -173,6 +199,10 @@ class EntityManager:
     M2: step_all() snapshots all positions into a numpy matrix, computes a
     vectorised neighbour distance matrix, builds StepContext per entity,
     then dispatches step(dt, context) — all neighbour data is from time t.
+
+    M3: _build_contexts() uses per-entity ``neighbor_radius_m`` so UAVs
+    receive a wider neighbourhood (FLR-004 separation) without increasing
+    the ground-entity radius (which would slow pedestrian social force).
 
     Pattern: Registry. Performance: O(n²) vectorised; upgrade to spatial
     hash grid at 500+ entities (M6+). Implements: ENT-001, NF-P-001.
@@ -224,7 +254,11 @@ class EntityManager:
 
     def _build_contexts(self, entities: List[Entity]) -> Dict[str, StepContext]:
         """
-        Vectorised O(n²) neighbour search using numpy dot-product distances.
+        Vectorised O(n²) neighbour search using per-entity radii (M3).
+
+        Each entity's neighbourhood is bounded by its own
+        ``neighbor_radius_m`` property, so UAVs receive a larger context
+        without inflating the radius for ground entities.
 
         Parameters
         ----------
@@ -237,20 +271,23 @@ class EntityManager:
         Returns
         -------
         dict[str, StepContext]
+            Per-entity neighbourhood snapshots.
         """
         n = len(entities)
-        radius_sq = _D.NEIGHBOR_RADIUS_M ** 2
 
-        # (n, 2) position matrix for vectorised distance computation
+        # (n, 2) XY position matrix for vectorised distance computation
         positions = np.array([e.position[:2] for e in entities])
+
+        # Per-entity squared radii array — avoids repeated sqrt (M3 addition)
+        radii_sq = np.array([e.neighbor_radius_m ** 2 for e in entities])
 
         contexts: Dict[str, StepContext] = {}
         for i, entity in enumerate(entities):
-            diffs = positions - positions[i]          # (n, 2)
-            # einsum "ij,ij->i" computes row-wise dot product = squared distances
+            diffs = positions - positions[i]   # (n, 2)
+            # einsum "ij,ij->i" = row-wise dot product = squared distances
             sq_dists = np.einsum("ij,ij->i", diffs, diffs)  # (n,)
-            # Exclude self (sq_dist==0) and entities beyond radius
-            mask = (sq_dists < radius_sq) & (sq_dists > 0.0)
+            # Use this entity's own radius; exclude self (sq_dist == 0)
+            mask = (sq_dists < radii_sq[i]) & (sq_dists > 0.0)
             neighbours: List[Entity] = [entities[j] for j in range(n) if mask[j]]
             contexts[entity.entity_id] = StepContext(neighbors=neighbours)
 
