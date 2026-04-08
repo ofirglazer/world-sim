@@ -33,9 +33,36 @@ from sim3dves.config.defaults import SimDefaults
 from sim3dves.core.event_bus import Event, EventBus, EventType
 from sim3dves.core.world import World
 from sim3dves.entities.base import Entity, EntityManager, EntityType
+from typing import Union
 from sim3dves.logging.logger import Logger
 
 _DEFAULTS = SimDefaults()
+
+
+class _NullLogger:
+    """
+    No-op logger used when SimulationConfig.logging_enabled is False (SIM-007).
+
+    Implements the same context-manager and logging interface as Logger so
+    that SimulationEngine can always call ``with self.logger:`` and
+    ``self.logger.log_step()`` without conditional guards — the disabled path
+    simply does nothing and never opens a file.
+    """
+
+    def __enter__(self) -> "_NullLogger":
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False  # Propagate exceptions
+
+    def log_step(self, *args: object, **kwargs: object) -> None:
+        """No-op: step record suppressed when logging is disabled."""
+
+    def log_event(self, *args: object, **kwargs: object) -> None:
+        """No-op: event record suppressed when logging is disabled."""
+
+    def close(self) -> None:
+        """No-op: no file handle to close."""
 
 
 @dataclass
@@ -55,6 +82,7 @@ class SimulationConfig:
     log_file: Path = field(
         default_factory=lambda: Path(_DEFAULTS.LOG_FILE)
     )
+    logging_enabled: bool = _DEFAULTS.SIM_LOGGING_ENABLED  # SIM-007
 
 
 class SimulationEngine:
@@ -113,7 +141,13 @@ class SimulationEngine:
 
         # Logger is created here; the context manager is applied in run()
         # so interactive (non-run) use can still call step() manually.
-        self.logger: Logger = Logger(config.log_file)
+        # SIM-007: when logging_enabled=False use a no-op _NullLogger so
+        # all call-sites remain identical — no conditional guards needed.
+        self.logger: Union[Logger, _NullLogger] = (
+            Logger(config.log_file)
+            if config.logging_enabled
+            else _NullLogger()
+        )
 
         # Wire event handlers — all boundary and NFZ events reach JSONL
         # Wire logger to event bus — all events reach the JSONL stream (LOG-002)

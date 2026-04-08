@@ -17,6 +17,10 @@ M3 features
 -----------
 * NFZ circles and geofence boundary (NF-VIZ-006 M3).
 * Zoom via scroll-wheel, pan via right-click drag (NF-VIZ-008).
+* Smooth pan: displacement computed from drag-start to prevent drift (NF-VIZ-016).
+* Arrow-key pan proportional to current view extent (NF-VIZ-017).
+* Window close detected; exposes ``window_closed`` property (NF-VIZ-018).
+* Space key pauses/resumes simulation; ``paused`` property exposed (NF-VIZ-019).
 * Reset view to default extent: "R" key and toolbar button (NF-VIZ-009).
 * Entity selection by left-click; highlights selected marker (NF-VIZ-010).
 * Inspection panel: FSM state, speed, destination; UAV extras: autopilot
@@ -87,8 +91,7 @@ _NFZ_ALPHA: float = 0.20             # NFZ fill transparency
 _SELECTION_THRESHOLD_PX: float = 15.0
 # Zoom factor per scroll tick (NF-VIZ-008)
 _ZOOM_FACTOR: float = 0.85
-# pan jump per key press
-_PAN_JUMP: int = 20
+# Arrow-key pan step: computed each press as VIZ_PAN_KEY_STEP_FRAC * view width (NF-VIZ-017)
 
 
 class DebugPlot:
@@ -142,16 +145,25 @@ class DebugPlot:
         self._nfz_cylinders: List[NFZCylinder] = nfz_cylinders or []
         self._step: int = 0
 
-        # --- Zoom / pan state (NF-VIZ-008) ---
+        # --- Zoom / pan state (NF-VIZ-008, NF-VIZ-016) ---
         self._xlim: Tuple[float, float] = (0.0, world_x)
         self._ylim: Tuple[float, float] = (0.0, world_y)
         self._is_panning: bool = False
         self._pan_start_display: Optional[Tuple[float, float]] = None
+        # Stored at right-click press for smooth drift-free pan (NF-VIZ-016)
+        self._xlim_at_pan_start: Tuple[float, float] = (0.0, world_x)
+        self._ylim_at_pan_start: Tuple[float, float] = (0.0, world_y)
 
         # --- Selection state (NF-VIZ-010, NF-VIZ-013) ---
         self._selected_entity_id: Optional[str] = None
         # Snapshot of entities from the most recent render() call
         self._last_entities: List[Entity] = []
+
+        # --- Window-close flag (NF-VIZ-018) ---
+        self._window_closed: bool = False
+
+        # --- Pause / resume state (NF-VIZ-019) ---
+        self._paused: bool = False
 
         # --- Reset button (NF-VIZ-009) ---
         ax_btn = self._fig.add_axes([0.80, 0.01, 0.18, 0.04])
@@ -167,6 +179,8 @@ class DebugPlot:
         self._fig.canvas.mpl_connect("button_release_event", self._on_button_release)
         self._fig.canvas.mpl_connect("motion_notify_event", self._on_motion)
         self._fig.canvas.mpl_connect("key_press_event",     self._on_key)
+        # NF-VIZ-018: window close terminates the simulation loop
+        self._fig.canvas.mpl_connect("close_event",         self._on_close)
 
     # -------------------------------------------------------------------------
     # Public API
@@ -312,9 +326,11 @@ class DebugPlot:
         self._ax.set_ylim(self._ylim)
         self._ax.set_xlabel("East (m)")
         self._ax.set_ylabel("North (m)")
+        # NF-VIZ-019: show pause state in title bar
+        pause_str = "  [PAUSED]" if self._paused else ""
         self._ax.set_title(
             f"3DVES  t={sim_time:.1f}s  step={self._step}  "
-            f"alive={len(living)}  dead={len(dead)}"
+            f"alive={len(living)}  dead={len(dead)}{pause_str}"
         )
         self._ax.grid(True, alpha=0.20, linestyle="--")
         self._ax.set_aspect("equal", adjustable="box")
@@ -476,6 +492,10 @@ class DebugPlot:
                 float(getattr(event, "x", 0.0)),
                 float(getattr(event, "y", 0.0)),
             )
+            # NF-VIZ-016: snapshot view limits at drag start so motion
+            # events compute offset from origin — prevents drift
+            self._xlim_at_pan_start = self._xlim
+            self._ylim_at_pan_start = self._ylim
 
     def _on_button_release(self, event: object) -> None:
         """Release right-click: end pan (NF-VIZ-008)."""
@@ -500,62 +520,71 @@ class DebugPlot:
 
         ex: float = float(getattr(event, "x", 0.0))
         ey: float = float(getattr(event, "y", 0.0))
+        # NF-VIZ-016: compute TOTAL delta from drag-start, not incremental delta.
+        # This makes pan smooth and drift-free over long drags.
         dx_disp = ex - self._pan_start_display[0]
         dy_disp = ey - self._pan_start_display[1]
 
-        xlim = self._ax.get_xlim()
-        ylim = self._ax.get_ylim()
         ax_bbox = self._ax.get_window_extent()
         if ax_bbox.width == 0 or ax_bbox.height == 0:
             return
 
-        # Convert pixel delta to data units, negate (drag right = pan left)
-        dx_data = -dx_disp * (xlim[1] - xlim[0]) / ax_bbox.width
-        dy_data = -dy_disp * (ylim[1] - ylim[0]) / ax_bbox.height
+        # Convert pixel delta to data units using the FROZEN start limits
+        # (not get_xlim()) so accumulated float error cannot build up.
+        xlim0 = self._xlim_at_pan_start
+        ylim0 = self._ylim_at_pan_start
+        dx_data = -dx_disp * (xlim0[1] - xlim0[0]) / ax_bbox.width
+        dy_data = -dy_disp * (ylim0[1] - ylim0[0]) / ax_bbox.height
 
-        new_xlim = (xlim[0] + dx_data, xlim[1] + dx_data)
-        new_ylim = (ylim[0] + dy_data, ylim[1] + dy_data)
+        new_xlim = (xlim0[0] + dx_data, xlim0[1] + dx_data)
+        new_ylim = (ylim0[0] + dy_data, ylim0[1] + dy_data)
         self._xlim = new_xlim
         self._ylim = new_ylim
         self._ax.set_xlim(new_xlim)
         self._ax.set_ylim(new_ylim)
-
-        # Update start for incremental tracking
-        self._pan_start_display = (ex, ey)
+        # Immediate visual feedback without waiting for next sim step render
         self._fig.canvas.draw_idle()
 
     def _on_key(self, event: object) -> None:
         """
         Keyboard handler:
-        * "r" / "R" -> reset view (NF-VIZ-009).
-        * "escape"  -> deselect entity (NF-VIZ-013).
-        * arrow buttons  -> pan.
+        * "r" / "R"     -> reset view (NF-VIZ-009).
+        * "escape"      -> deselect entity (NF-VIZ-013).
+        * arrow keys    -> pan proportional to view extent (NF-VIZ-017).
+        * VIZ_PAUSE_KEY -> toggle pause/resume (NF-VIZ-019).
         """
-        key = getattr(event, "key", "")
-        if key in ("r", "R"):
+        key = getattr(event, "key", "") or ""
+        if key in ("r", "R", _D.VIZ_ZOOM_RESET_KEY):
             self._reset_view()
-        elif key == "escape":
+        elif key in ("escape", _D.VIZ_DESELECT_KEY):
             self._selected_entity_id = None    # NF-VIZ-013
+        elif key == _D.VIZ_PAUSE_KEY:           # NF-VIZ-019
+            self._paused = not self._paused
         elif key == "up":
-            ylim = self._ax.get_ylim()
-            new_ylim = (ylim[0] + _PAN_JUMP, ylim[1] + _PAN_JUMP)
+            # NF-VIZ-017: step = VIZ_PAN_KEY_STEP_FRAC of current view height
+            step = _D.VIZ_PAN_KEY_STEP_FRAC * (self._ylim[1] - self._ylim[0])
+            new_ylim = (self._ylim[0] + step, self._ylim[1] + step)
             self._ylim = new_ylim
             self._ax.set_ylim(new_ylim)
+            self._fig.canvas.draw_idle()
         elif key == "down":
-            ylim = self._ax.get_ylim()
-            new_ylim = (ylim[0] - _PAN_JUMP, ylim[1] - _PAN_JUMP)
+            step = _D.VIZ_PAN_KEY_STEP_FRAC * (self._ylim[1] - self._ylim[0])
+            new_ylim = (self._ylim[0] - step, self._ylim[1] - step)
             self._ylim = new_ylim
             self._ax.set_ylim(new_ylim)
+            self._fig.canvas.draw_idle()
         elif key == "right":
-            xlim = self._ax.get_xlim()
-            new_xlim = (xlim[0] + _PAN_JUMP, xlim[1] + _PAN_JUMP)
+            step = _D.VIZ_PAN_KEY_STEP_FRAC * (self._xlim[1] - self._xlim[0])
+            new_xlim = (self._xlim[0] + step, self._xlim[1] + step)
             self._xlim = new_xlim
             self._ax.set_xlim(new_xlim)
+            self._fig.canvas.draw_idle()
         elif key == "left":
-            xlim = self._ax.get_xlim()
-            new_xlim = (xlim[0] - _PAN_JUMP, xlim[1] - _PAN_JUMP)
+            step = _D.VIZ_PAN_KEY_STEP_FRAC * (self._xlim[1] - self._xlim[0])
+            new_xlim = (self._xlim[0] - step, self._xlim[1] - step)
             self._xlim = new_xlim
             self._ax.set_xlim(new_xlim)
+            self._fig.canvas.draw_idle()
 
     def _reset_view(self) -> None:
         """
@@ -568,6 +597,26 @@ class DebugPlot:
         self._ax.set_xlim(self._xlim)
         self._ax.set_ylim(self._ylim)
         self._fig.canvas.draw_idle()
+
+    def _on_close(self, event: object) -> None:
+        """
+        Handle matplotlib close_event: set ``_window_closed`` flag (NF-VIZ-018).
+
+        The run loop polls ``plot.window_closed`` each step and breaks cleanly
+        when this flag is True, allowing the logger context manager to flush
+        and close the JSONL file before the process exits.
+        """
+        self._window_closed = True
+
+    @property
+    def window_closed(self) -> bool:
+        """True after the visualiser window has been closed (NF-VIZ-018)."""
+        return self._window_closed
+
+    @property
+    def paused(self) -> bool:
+        """True when the simulation is paused via VIZ_PAUSE_KEY (NF-VIZ-019)."""
+        return self._paused
 
     # -------------------------------------------------------------------------
     # Selection helpers

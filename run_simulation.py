@@ -18,6 +18,10 @@ M3 scenario runner — demonstrates all M3 features:
   - Cued slew: UAV-0 and UAV-1 cued to orbit EOI (FLR-009).
   - Three search patterns with corrected safe-margin waypoints (FLR-008 fix).
   - Interactive visualiser: zoom, pan, reset, entity inspection (NF-VIZ-008-015).
+  - Smooth drag pan and arrow-key pan (NF-VIZ-016, NF-VIZ-017).
+  - Window close stops simulation gracefully (NF-VIZ-018).
+  - Space key pauses / resumes simulation (NF-VIZ-019).
+  - Optional logging via SimulationConfig.logging_enabled (SIM-007).
   - All M2 features retained.
 
 NF-CE-001: PEP8 compliant.
@@ -53,16 +57,16 @@ _D = SimDefaults()
 # ### Scenario parameters (all sourced from _D or explicit overrides) ###
 # These are scenario-level overrides, not defaults; the larger world size is
 # intentional for M3 UAV coverage.  PED_NUMBER comes from SimDefaults (NF-M-006).
-WORLD_X = _D.WORLD_EXTENT_X_M  # can overide 600.0
-WORLD_Y = _D.WORLD_EXTENT_Y_M  # can overide 600.0
-GRID_ROWS = _D.GRID_ROWS  # can overide 6, 6, 100.0
-GRID_COLS = _D.GRID_COLS  # can overide 6, 6, 100.0
+WORLD_X = 1500  # _D.WORLD_EXTENT_X_M  # can overide 600.0
+WORLD_Y = 1500  # _D.WORLD_EXTENT_Y_M  # can overide 600.0
+GRID_ROWS = 10  # _D.GRID_ROWS  # can overide 6, 6, 100.0
+GRID_COLS = 10  # _D.GRID_COLS  # can overide 6, 6, 100.0
 GRID_SPACING_M = _D.GRID_SPACING_M  # can overide 6, 6, 100.0
 GRID_ORIGIN = _D.GRID_ORIGIN  # can overide np.array([50.0, 50.0])
-NUM_WHEELED = _D.NUM_WHEELED  # can overide 12
-NUM_TRACKED = _D.NUM_TRACKED  # can overide 5
-NUM_PEDESTRIANS = _D.NUM_PEDESTRIANS  # can overide 40
-NUM_UAVS = _D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
+NUM_WHEELED = 1  # _D.NUM_WHEELED  # can overide 12
+NUM_TRACKED = 1  # _D.NUM_TRACKED  # can overide 5
+NUM_PEDESTRIANS = 1  # _D.NUM_PEDESTRIANS  # can overide 40
+NUM_UAVS = 8  # _D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
 
 # NFZ cylinders placed to exercise FLR-001 avoidance
 NFZ_DEFINITIONS = []  # _D.NFZ_DEFINITIONS
@@ -193,7 +197,8 @@ def main() -> None:
         f"{NUM_PEDESTRIANS} peds | {NUM_UAVS} UAVs | "
         f"{len(nfz_cylinders)} NFZs | {len(road_network)} road nodes"
     )
-    print("Controls: scroll=zoom | drag=pan | R=reset | click=select | Esc=deselect")
+    print("Controls: scroll=zoom | right-drag=pan | arrows=pan | R=reset"
+          " | click=select | Esc=deselect | Space=pause/resume | close=stop")
 
     # ### Visualiser (M3 interactive, NF-VIZ-008..015) ###
     plot = DebugPlot(
@@ -207,7 +212,17 @@ def main() -> None:
 
     with sim.logger:
         for step in range(steps):
-            wall_start = time.perf_counter()  # wall means the real tine elapsed time
+            # NF-VIZ-018: window close → break cleanly (logger flushed by context)
+            if plot.window_closed:
+                break
+
+            # NF-VIZ-019: pause → render but skip simulation step
+            if plot.paused:
+                plot.render(sim.entities.living(), sim_time=sim.sim_time)
+                time.sleep(config.dt)
+                continue
+
+            wall_start = time.perf_counter()  # wall means the real time elapsed
             elapsed_step = sim.step()
             # print(f"Elapsed time in sim.step: {elapsed_step:.4f} sec")
 

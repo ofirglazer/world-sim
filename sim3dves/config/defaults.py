@@ -70,8 +70,9 @@ class SimDefaults:
 
     # ### Simulation clock (SIM-001) ###
     SIM_DT_S: float = 0.1  # Default timestep (seconds)
-    SIM_DURATION_S: float = 60.0  # Default scenario duration (seconds)
+    SIM_DURATION_S: float = 600.0  # Default scenario duration (seconds)
     SIM_SEED: int = 42  # Default RNG seed (SIM-003)
+    SIM_LOGGING_ENABLED: bool = False  # Enable JSONL logging (SIM-007)
 
     # ### Populating sim ###
     NUM_WHEELED: int = 12
@@ -173,3 +174,5 @@ class SimDefaults:
     VIZ_HIT_THRESHOLD_FRAC: float = 0.025     # Click hit-test radius as fraction of view width
     VIZ_DRAG_THRESHOLD_PX: float = 5.0        # Pixel movement to distinguish drag from click
     VIZ_PANEL_ALPHA: float = 0.80             # Inspection panel background transparency
+    VIZ_PAN_KEY_STEP_FRAC: float = 0.10        # Arrow-key pan step as fraction of view (NF-VIZ-017)
+    VIZ_PAUSE_KEY: str = " "               # Key to pause/resume simulation (NF-VIZ-019)
