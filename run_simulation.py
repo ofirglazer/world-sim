@@ -18,11 +18,17 @@ M3 scenario runner — demonstrates all M3 features:
   - Cued slew: UAV-0 and UAV-1 cued to orbit EOI (FLR-009).
   - Three search patterns with corrected safe-margin waypoints (FLR-008 fix).
   - Interactive visualiser: zoom, pan, reset, entity inspection (NF-VIZ-008-015).
-  - Smooth drag pan and arrow-key pan (NF-VIZ-016, NF-VIZ-017).
-  - Window close stops simulation gracefully (NF-VIZ-018).
-  - Space key pauses / resumes simulation (NF-VIZ-019).
-  - Optional logging via SimulationConfig.logging_enabled (SIM-007).
+  - Smooth drag pan, arrow-key pan (NF-VIZ-016, NF-VIZ-017).
+  - Window close stops simulation (NF-VIZ-018); pause/resume key (NF-VIZ-019).
   - All M2 features retained.
+=================
+M4 scenario additions:
+  - OpticalPayload attached to each UAV (PAY-001..007).
+  - DetectionEngine: P(D) model + vectorised LOS raycast (POL-001, NF-P-004).
+  - FOV cone rendered in visualiser per UAV (NF-VIZ-006 M4).
+  - DETECTION events published on EventBus and logged (PAY-004, LOG-002).
+  - SimulationView used (DebugPlot alias retained for compatibility).
+  - Optional logging via SimulationConfig.logging_enabled (SIM-007).
 
 NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
@@ -48,7 +54,9 @@ from sim3dves.entities.vehicle import (
     WheeledVehicleEntity,
 )
 from sim3dves.maps.road_network import RoadNetwork
-from sim3dves.viz.debug_plot import DebugPlot
+from sim3dves.payload.detection_engine import DetectionEngine
+from sim3dves.payload.optical_payload import GimbalMode, OpticalPayload
+from sim3dves.viz.debug_plot import DebugPlot, SimulationView
 
 # from line_profiler import LineProfiler
 
@@ -191,17 +199,23 @@ def main() -> None:
         )
         sim.add_entity(uav)
         uav_entities.append(uav)
+        # M4: attach one OpticalPayload per UAV (PAY-001, FLR-009)
+        uav.payload = OpticalPayload(
+            owner_id=uav.entity_id,
+            detection_engine=DetectionEngine(),
+        )
 
     print(
         f"M3: {NUM_WHEELED} wheeled | {NUM_TRACKED} tracked | "
         f"{NUM_PEDESTRIANS} peds | {NUM_UAVS} UAVs | "
         f"{len(nfz_cylinders)} NFZs | {len(road_network)} road nodes"
     )
-    print("Controls: scroll=zoom | right-drag=pan | arrows=pan | R=reset"
+    print("Controls: scroll=zoom | right-drag/arrows=pan | R=reset"
           " | click=select | Esc=deselect | Space=pause/resume | close=stop")
 
     # ### Visualiser (M3 interactive, NF-VIZ-008..015) ###
-    plot = DebugPlot(
+    # M4: use SimulationView (DebugPlot alias) with FOV cone support
+    plot = SimulationView(
         WORLD_X, WORLD_Y,
         road_network=road_network,
         nfz_cylinders=nfz_cylinders,
@@ -226,7 +240,20 @@ def main() -> None:
             elapsed_step = sim.step()
             # print(f"Elapsed time in sim.step: {elapsed_step:.4f} sec")
 
-            # FLR-009: cue two UAVs to orbit the first EOI at step 30
+            # M4: step each UAV payload (PAY-001..007, NF-P-004)
+            living_entities = sim.entities.living()
+            for uav in uav_entities:
+                if uav.alive and hasattr(uav, "payload"):
+                    uav.payload.step(
+                        uav_position=uav.position,
+                        uav_heading_deg=uav.heading,
+                        entities=living_entities,
+                        dt=config.dt,
+                        structures=world.structures,
+                    )
+
+            # FLR-009: cue two UAVs to orbit the first EOI at step 30;
+            # also command their payloads to CUED mode (PAY-005)
             if step == CUE_ORBIT_STEP and eoi_ped_pos is not None:
                 for idx in range(min(2, len(uav_entities))):
                     uav_entities[idx].cue_orbit(
@@ -234,6 +261,8 @@ def main() -> None:
                         radius_m=_D.UAV_ORBIT_RADIUS_M,
                         altitude_m=_D.UAV_CRUISE_ALT_M,
                     )
+                    if hasattr(uav_entities[idx], "payload"):
+                        uav_entities[idx].payload.command_stare(eoi_ped_pos[:2])
                 print(
                     f"  Step {step}: UAV-0/1 cued to orbit EOI at "
                     f"({eoi_ped_pos[0]:.0f}, {eoi_ped_pos[1]:.0f})"

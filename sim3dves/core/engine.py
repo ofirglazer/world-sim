@@ -41,12 +41,10 @@ _DEFAULTS = SimDefaults()
 
 class _NullLogger:
     """
-    No-op logger used when SimulationConfig.logging_enabled is False (SIM-007).
+    No-op logger activated when SimulationConfig.logging_enabled is False (SIM-007).
 
-    Implements the same context-manager and logging interface as Logger so
-    that SimulationEngine can always call ``with self.logger:`` and
-    ``self.logger.log_step()`` without conditional guards — the disabled path
-    simply does nothing and never opens a file.
+    Implements identical interface to Logger so SimulationEngine call-sites
+    require no conditional guards — the disabled path is transparent.
     """
 
     def __enter__(self) -> "_NullLogger":
@@ -158,6 +156,10 @@ class SimulationEngine:
         self.event_bus.subscribe(
             EventType.NFZ_VIOLATION, self._handle_nfz_violation
         )
+        # M4: wire DETECTION events to logger (LOG-002, PAY-004)
+        self.event_bus.subscribe(
+            EventType.DETECTION, self._handle_detection
+        )
 
         self.sim_time: float = 0.0   # Current simulation time (s)
         self.step_idx: int = 0       # Zero-based step counter
@@ -216,7 +218,19 @@ class SimulationEngine:
                     },
                 ))
 
-        # 4. Log living entities only — dead entities add noise, not value
+        # 4. Collect and publish DETECTION events from UAV payloads (M4, PAY-004)
+        for entity in self.entities.by_type(EntityType.UAV):
+            payload = getattr(entity, "payload", None)
+            if payload is None:
+                continue
+            for det in payload.flush_detections():
+                self.event_bus.publish(Event(
+                    timestamp=self.sim_time,
+                    event_type=EventType.DETECTION,
+                    payload=det,
+                ))
+
+        # 5. Log living entities only — dead entities add noise, not value
         wall_dt = time.perf_counter() - wall_start
         self.logger.log_step(
             self.step_idx,
@@ -268,6 +282,19 @@ class SimulationEngine:
         """
         self.logger.log_event({
             "type": EventType.NFZ_VIOLATION.name,
+            "timestamp": event.timestamp,
+            **event.payload,
+        })
+
+    def _handle_detection(self, event: Event) -> None:
+        """
+        Write a DETECTION event record to the JSONL stream (LOG-002, PAY-004).
+
+        Subscribed to EventBus in __init__.  Published each step for every
+        entity detected inside any UAV payload FOV with P(D) > threshold.
+        """
+        self.logger.log_event({
+            "type": EventType.DETECTION.name,
             "timestamp": event.timestamp,
             **event.payload,
         })

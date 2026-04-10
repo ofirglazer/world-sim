@@ -15,6 +15,12 @@ M3 fixes    : Added UAV_CORNER_ESCAPE_MARGIN_M and UAV_SEARCH_MARGIN_M
               (FLR-008, FLR-011) to deconflict search patterns from geofence.
               World defaults (WORLD_ALT_FLOOR_M, WORLD_ALT_CEIL_M) are now
               consumed by World.__init__ so they are no longer unused.
+M3 v1.3     : SIM_LOGGING_ENABLED (SIM-007), VIZ_PAN_KEY_STEP_FRAC
+              (NF-VIZ-017), VIZ_PAUSE_KEY=" " corrected callback value
+              (NF-VIZ-019).
+M4 additions: Optical payload constants (PAY-001..007), detection model
+              (POL-001), LOS batch size (NF-P-004), tracking gate
+              (PAY-005).
 """
 from dataclasses import dataclass
 import numpy
@@ -72,7 +78,7 @@ class SimDefaults:
     SIM_DT_S: float = 0.1  # Default timestep (seconds)
     SIM_DURATION_S: float = 600.0  # Default scenario duration (seconds)
     SIM_SEED: int = 42  # Default RNG seed (SIM-003)
-    SIM_LOGGING_ENABLED: bool = False  # Enable JSONL logging (SIM-007)
+    SIM_LOGGING_ENABLED: bool = True  # Enable JSONL logging (SIM-007)
 
     # ### Populating sim ###
     NUM_WHEELED: int = 12
@@ -168,11 +174,44 @@ class SimDefaults:
         (400.0, 450.0, 70.0, 300.0),
     ]
 
-    # ### Visualiser interactive controls (NF-VIZ-008-015) ###
-    VIZ_ZOOM_RESET_KEY: str = "r"             # Keyboard shortcut to reset view
-    VIZ_DESELECT_KEY: str = "escape"          # Keyboard shortcut to deselect entity
-    VIZ_HIT_THRESHOLD_FRAC: float = 0.025     # Click hit-test radius as fraction of view width
-    VIZ_DRAG_THRESHOLD_PX: float = 5.0        # Pixel movement to distinguish drag from click
-    VIZ_PANEL_ALPHA: float = 0.80             # Inspection panel background transparency
-    VIZ_PAN_KEY_STEP_FRAC: float = 0.10        # Arrow-key pan step as fraction of view (NF-VIZ-017)
-    VIZ_PAUSE_KEY: str = " "               # Key to pause/resume simulation (NF-VIZ-019)
+    # ==========================================================================
+    # Optical Payload subsystem (M4)
+    # ==========================================================================
+
+    # ### Gimbal articulation (PAY-002, PAY-003) ###
+    # Azimuth relative to UAV heading (ENU CCW); elevation negative-down
+    # (0 = horizon, -90 = nadir).
+    PAY_GIMBAL_AZ_RANGE_DEG: float = 180.0    # ±90° either side of nose (PAY-002)
+    PAY_GIMBAL_EL_MIN_DEG: float = -90.0      # Max depression / nadir (PAY-003)
+    PAY_GIMBAL_EL_MAX_DEG: float = 0.0        # Max elevation / horizon (PAY-003)
+    PAY_GIMBAL_RATE_DPS: float = 45.0         # Max gimbal slew rate (deg/s, PAY-003)
+
+    # ### Field of View (PAY-001) ###
+    PAY_FOV_DEG: float = 20.0                 # Full cone angle; half-angle = 10°
+    PAY_FOOTPRINT_MAX_M: float = 800.0        # Max footprint radius on ground (m)
+
+    # ### Detection model (PAY-004, POL-001) ###
+    # P(D) = BASE_PD * signature * (1 - dist/RANGE_M), clipped to [0,1].
+    PAY_DETECT_BASE_PD: float = 0.90          # Peak detection probability
+    PAY_DETECT_RANGE_M: float = 500.0         # Range beyond which P(D) = 0 (m)
+    PAY_DETECT_MIN_RANGE_M: float = 20.0      # Min useful range (m)
+    PAY_DETECT_SIGNATURE_WEIGHT: float = 1.0  # Signature scaling (POL-001)
+
+    # ### LOS raycast (NF-P-004) ###
+    PAY_LOS_BATCH_SIZE: int = 64              # Entities per vectorised LOS batch
+
+    # ### Tracking gate (PAY-005) ###
+    PAY_TRACK_GATE_M: float = 50.0            # Max allowed position jump (m)
+    PAY_CUED_DWELL_S: float = 3.0             # Dwell before cueing UAV orbit (s)
+
+    # ==========================================================================
+    # Visualiser interactive controls (NF-VIZ-008..019)
+    # ==========================================================================
+
+    VIZ_ZOOM_RESET_KEY: str = "r"
+    VIZ_DESELECT_KEY: str = "escape"
+    VIZ_HIT_THRESHOLD_FRAC: float = 0.025
+    VIZ_DRAG_THRESHOLD_PX: float = 5.0
+    VIZ_PANEL_ALPHA: float = 0.80
+    VIZ_PAN_KEY_STEP_FRAC: float = 0.10       # NF-VIZ-017
+    VIZ_PAUSE_KEY: str = " "                  # Space-bar callback value (NF-VIZ-019)

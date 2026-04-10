@@ -17,10 +17,10 @@ M3 features
 -----------
 * NFZ circles and geofence boundary (NF-VIZ-006 M3).
 * Zoom via scroll-wheel, pan via right-click drag (NF-VIZ-008).
-* Smooth pan: displacement computed from drag-start to prevent drift (NF-VIZ-016).
+* Smooth drift-free drag pan anchored to drag-start world coords (NF-VIZ-016).
 * Arrow-key pan proportional to current view extent (NF-VIZ-017).
-* Window close detected; exposes ``window_closed`` property (NF-VIZ-018).
-* Space key pauses/resumes simulation; ``paused`` property exposed (NF-VIZ-019).
+* Window close sets window_closed flag; run loop breaks cleanly (NF-VIZ-018).
+* Space key pauses/resumes; paused property + [PAUSED] title (NF-VIZ-019).
 * Reset view to default extent: "R" key and toolbar button (NF-VIZ-009).
 * Entity selection by left-click; highlights selected marker (NF-VIZ-010).
 * Inspection panel: FSM state, speed, destination; UAV extras: autopilot
@@ -30,12 +30,17 @@ M3 features
 * Escape key or empty-space click deselects; panel hides (NF-VIZ-013).
 * Panel is a fixed upper-left text overlay (NF-VIZ-014).
 
+M4 features
+-----------
+* FOV cone overlay per UAV payload (NF-VIZ-006 M4).
+* Renamed to SimulationView (DebugPlot preserved as alias).
+
 Visualiser roadmap (NF-VIZ-006)
 --------------------------------
 M1 : positions, heading arrows, EOI markers, legend, clock.
 M2 : vehicle types, road network overlay.
 M3 : NFZ circles, geofence, zoom/pan, entity inspection (this file).
-M4 : FOV cone; rename DebugPlot -> SimulationView.
+M4 : FOV cone; SimulationView rename (this file).
 M5 : Track centroids and covariance ellipses.
 M6 : Full road graph overlay.
 
@@ -83,6 +88,8 @@ _NODE_COLOUR: str = "#757575"        # Road node colour
 _NFZ_FILL_COLOUR: str = "#FF0000"    # NFZ fill (alpha applied separately)
 _NFZ_EDGE_COLOUR: str = "#D32F2F"    # NFZ border colour
 _GEOFENCE_COLOUR: str = "#FF6F00"    # Geofence boundary colour
+_FOV_COLOUR: str = "#FFEB3B"         # FOV cone fill colour (NF-VIZ-006 M4)
+_FOV_ALPHA: float = 0.18              # FOV cone transparency
 _BACKGROUND_COLOUR: str = "#C0C0C0"  # Background classic silver color of the plot
 _HEADING_ALPHA: float = 0.70         # Arrow transparency
 _NFZ_ALPHA: float = 0.20             # NFZ fill transparency
@@ -91,7 +98,7 @@ _NFZ_ALPHA: float = 0.20             # NFZ fill transparency
 _SELECTION_THRESHOLD_PX: float = 15.0
 # Zoom factor per scroll tick (NF-VIZ-008)
 _ZOOM_FACTOR: float = 0.85
-# Arrow-key pan step: computed each press as VIZ_PAN_KEY_STEP_FRAC * view width (NF-VIZ-017)
+# Arrow-key pan step is VIZ_PAN_KEY_STEP_FRAC × view extent (NF-VIZ-017)
 
 
 class DebugPlot:
@@ -139,8 +146,6 @@ class DebugPlot:
         except AttributeError:
             pass
 
-        self._world_x: float = float(world_x)
-        self._world_y: float = float(world_y)
         self._road_network: Optional[RoadNetwork] = road_network
         self._nfz_cylinders: List[NFZCylinder] = nfz_cylinders or []
         self._step: int = 0
@@ -150,7 +155,7 @@ class DebugPlot:
         self._ylim: Tuple[float, float] = (0.0, world_y)
         self._is_panning: bool = False
         self._pan_start_display: Optional[Tuple[float, float]] = None
-        # Stored at right-click press for smooth drift-free pan (NF-VIZ-016)
+        # Snapshot of limits at drag-start for drift-free pan (NF-VIZ-016)
         self._xlim_at_pan_start: Tuple[float, float] = (0.0, world_x)
         self._ylim_at_pan_start: Tuple[float, float] = (0.0, world_y)
 
@@ -159,7 +164,7 @@ class DebugPlot:
         # Snapshot of entities from the most recent render() call
         self._last_entities: List[Entity] = []
 
-        # --- Window-close flag (NF-VIZ-018) ---
+        # --- Window close flag (NF-VIZ-018) ---
         self._window_closed: bool = False
 
         # --- Pause / resume state (NF-VIZ-019) ---
@@ -179,7 +184,7 @@ class DebugPlot:
         self._fig.canvas.mpl_connect("button_release_event", self._on_button_release)
         self._fig.canvas.mpl_connect("motion_notify_event", self._on_motion)
         self._fig.canvas.mpl_connect("key_press_event",     self._on_key)
-        # NF-VIZ-018: window close terminates the simulation loop
+        # NF-VIZ-018: window close stops the simulation run loop
         self._fig.canvas.mpl_connect("close_event",         self._on_close)
 
     # -------------------------------------------------------------------------
@@ -210,6 +215,7 @@ class DebugPlot:
             self._draw_road_network()                   # NF-VIZ-006 M2
         if self._nfz_cylinders:
             self._draw_nfz_circles()                    # NF-VIZ-006 M3
+        self._draw_fov_cones(entities)                  # NF-VIZ-006 M4
 
         # --- Partition entities ---
         living: List[Entity] = [e for e in entities if e.alive]
@@ -327,10 +333,10 @@ class DebugPlot:
         self._ax.set_xlabel("East (m)")
         self._ax.set_ylabel("North (m)")
         # NF-VIZ-019: show pause state in title bar
-        pause_str = "  [PAUSED]" if self._paused else ""
+        _pause_str = "  [PAUSED]" if self._paused else ""
         self._ax.set_title(
             f"3DVES  t={sim_time:.1f}s  step={self._step}  "
-            f"alive={len(living)}  dead={len(dead)}{pause_str}"
+            f"alive={len(living)}  dead={len(dead)}{_pause_str}"
         )
         self._ax.grid(True, alpha=0.20, linestyle="--")
         self._ax.set_aspect("equal", adjustable="box")
@@ -492,8 +498,7 @@ class DebugPlot:
                 float(getattr(event, "x", 0.0)),
                 float(getattr(event, "y", 0.0)),
             )
-            # NF-VIZ-016: snapshot view limits at drag start so motion
-            # events compute offset from origin — prevents drift
+            # NF-VIZ-016: freeze limits at drag-start to prevent drift
             self._xlim_at_pan_start = self._xlim
             self._ylim_at_pan_start = self._ylim
 
@@ -520,8 +525,8 @@ class DebugPlot:
 
         ex: float = float(getattr(event, "x", 0.0))
         ey: float = float(getattr(event, "y", 0.0))
-        # NF-VIZ-016: compute TOTAL delta from drag-start, not incremental delta.
-        # This makes pan smooth and drift-free over long drags.
+        # NF-VIZ-016: total offset from drag-start (no incremental update).
+        # Using frozen start limits avoids float accumulation / drift.
         dx_disp = ex - self._pan_start_display[0]
         dy_disp = ey - self._pan_start_display[1]
 
@@ -600,11 +605,10 @@ class DebugPlot:
 
     def _on_close(self, event: object) -> None:
         """
-        Handle matplotlib close_event: set ``_window_closed`` flag (NF-VIZ-018).
+        Handle matplotlib close_event: set the window_closed flag (NF-VIZ-018).
 
         The run loop polls ``plot.window_closed`` each step and breaks cleanly
-        when this flag is True, allowing the logger context manager to flush
-        and close the JSONL file before the process exits.
+        so the logger context manager can flush and close the JSONL file.
         """
         self._window_closed = True
 
@@ -706,6 +710,59 @@ class DebugPlot:
     # Static draw helpers
     # -------------------------------------------------------------------------
 
+
+    def _draw_fov_cones(self, entities: List[Entity]) -> None:
+        """
+        Draw payload FOV cone footprints for UAVs that carry a payload
+        (NF-VIZ-006 M4).
+
+        Each cone is rendered as a filled wedge projected onto the XY plane.
+        The wedge apex is the UAV XY position; the arc radius is the
+        approximate ground footprint at current altitude assuming nadir look.
+
+        Entities without a ``payload`` attribute are silently skipped so
+        the method remains safe when payloads are not attached.
+
+        Parameters
+        ----------
+        entities : list[Entity]
+            All living entities from the current render frame.
+        """
+        import matplotlib.patches as _mp
+        import math as _math
+
+        for entity in entities:
+            if entity.entity_type != EntityType.UAV:
+                continue
+            payload = getattr(entity, "payload", None)
+            if payload is None:
+                continue
+            if payload.fov_tip_world is None or payload.fov_axis_world is None:
+                continue
+
+            # Aim vector azimuth in degrees (ENU CCW from East)
+            ax_xy = payload.fov_axis_world
+            aim_deg = _math.degrees(_math.atan2(float(ax_xy[1]), float(ax_xy[0])))
+
+            # Ground footprint radius: altitude / tan(|el|), capped
+            el_deg = payload.gimbal_el_deg
+            el_rad = _math.radians(abs(el_deg)) if el_deg != 0.0 else _math.radians(1.0)
+            alt = max(float(entity.position[2]), 1.0)
+            footprint_r = min(alt / _math.tan(el_rad), _D.PAY_FOOTPRINT_MAX_M)
+            footprint_r = max(footprint_r, 10.0)  # Guard against zero
+
+            half_ang = payload.fov_half_angle_deg
+            wedge = _mp.Wedge(
+                center=(float(entity.position[0]), float(entity.position[1])),
+                r=footprint_r,
+                theta1=aim_deg - half_ang,
+                theta2=aim_deg + half_ang,
+                facecolor=_FOV_COLOUR,
+                edgecolor=_FOV_COLOUR,
+                alpha=_FOV_ALPHA,
+                zorder=4,
+            )
+            self._ax.add_patch(wedge)
     def _draw_legend(self) -> None:
         """Build and attach the legend (NF-VIZ-005)."""
         handles = [
@@ -826,3 +883,9 @@ class DebugPlot:
                 fontsize=6, color=_NFZ_EDGE_COLOUR,
                 fontweight="bold", zorder=4, alpha=0.85,
             )
+
+
+# NF-VIZ-006 M4: rename DebugPlot -> SimulationView.
+# DebugPlot is preserved as a backwards-compatible alias so existing tests
+# and M3 test fixtures remain unchanged without modification.
+SimulationView = DebugPlot
