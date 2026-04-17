@@ -30,7 +30,7 @@ Implements: PAY-004, POL-001, NF-P-004.
 from __future__ import annotations
 
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -62,6 +62,9 @@ class DetectionEngine:
     signature_weight : float
         Scaling applied to entity.signature (default:
         PAY_DETECT_SIGNATURE_WEIGHT).
+    rng : np.random.Generator, optional
+        Seeded random-number generator for the Bernoulli detection draw
+        (SIM-003 determinism).  Defaults to ``np.random.default_rng()``.
     """
 
     def __init__(
@@ -70,11 +73,16 @@ class DetectionEngine:
         range_m: float = _D.PAY_DETECT_RANGE_M,
         min_range_m: float = _D.PAY_DETECT_MIN_RANGE_M,
         signature_weight: float = _D.PAY_DETECT_SIGNATURE_WEIGHT,
+        rng: Optional[np.random.Generator] = None,
     ) -> None:
         self._base_pd: float = float(base_pd)
         self._range_m: float = float(range_m)
         self._min_range_m: float = float(min_range_m)
         self._signature_weight: float = float(signature_weight)
+        # Seeded RNG for the per-entity Bernoulli draw (SIM-003)
+        self._rng: np.random.Generator = (
+            rng if rng is not None else np.random.default_rng()
+        )
 
     # ### Public API ###
 
@@ -88,10 +96,10 @@ class DetectionEngine:
         Run P(D) model and LOS check on all candidate entities (NF-P-004).
 
         Candidates are processed in chunks of PAY_LOS_BATCH_SIZE.  Within
-        each chunk the LOS computation is fully vectorised.  A detection
-        result is returned for every candidate regardless of P(D) value so
-        callers can log miss statistics if desired; filtering to P(D) > 0
-        is the caller's responsibility.
+        each chunk the LOS computation is fully vectorised.  For each
+        candidate a Bernoulli trial is drawn against the computed P(D): only
+        entities that pass the draw are included in the returned list.  This
+        implements the stochastic detection model (POL-001).
 
         Parameters
         ----------
@@ -105,7 +113,9 @@ class DetectionEngine:
         Returns
         -------
         list[DetectionResult]
-            List of (entity, p_d, los_clear) tuples.
+            List of (entity, p_d, los_clear) tuples for entities that
+            *actually passed the Bernoulli draw* this step.  Entities
+            in the FOV that were not detected (random miss) are absent.
         """
         results: List[DetectionResult] = []
         batch_size = _D.PAY_LOS_BATCH_SIZE
@@ -119,7 +129,13 @@ class DetectionEngine:
             for i, entity in enumerate(batch):
                 dist = float(np.linalg.norm(entity.position - observer))
                 pd = self.compute_pd(entity, dist, los_flags[i])
-                results.append((entity, pd, bool(los_flags[i])))
+                # Bernoulli draw: only report a detection when the random
+                # trial succeeds.  This is what makes P(D) a true probability
+                # — an entity with P(D)=0.9 is missed ~10% of steps even when
+                # in FOV with clear LOS.  Skipping the draw would make every
+                # in-FOV entity unconditionally detected (POL-001, SIM-003).
+                if pd > 0.0 and self._rng.random() < pd:
+                    results.append((entity, pd, bool(los_flags[i])))
 
         return results
 

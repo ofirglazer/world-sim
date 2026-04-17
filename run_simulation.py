@@ -54,7 +54,6 @@ from sim3dves.entities.vehicle import (
     WheeledVehicleEntity,
 )
 from sim3dves.maps.road_network import RoadNetwork
-from sim3dves.payload.detection_engine import DetectionEngine
 from sim3dves.payload.optical_payload import GimbalMode, OpticalPayload
 from sim3dves.viz.debug_plot import DebugPlot, SimulationView
 
@@ -73,8 +72,8 @@ GRID_SPACING_M = _D.GRID_SPACING_M  # can overide 6, 6, 100.0
 GRID_ORIGIN = _D.GRID_ORIGIN  # can overide np.array([50.0, 50.0])
 NUM_WHEELED = 1  # _D.NUM_WHEELED  # can overide 12
 NUM_TRACKED = 1  # _D.NUM_TRACKED  # can overide 5
-NUM_PEDESTRIANS = 1  # _D.NUM_PEDESTRIANS  # can overide 40
-NUM_UAVS = 8  # _D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
+NUM_PEDESTRIANS = 30  # _D.NUM_PEDESTRIANS  # can overide 40
+NUM_UAVS = 1  # _D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
 
 # NFZ cylinders placed to exercise FLR-001 avoidance
 NFZ_DEFINITIONS = []  # _D.NFZ_DEFINITIONS
@@ -199,14 +198,16 @@ def main() -> None:
         )
         sim.add_entity(uav)
         uav_entities.append(uav)
-        # M4: attach one OpticalPayload per UAV (PAY-001, FLR-009)
+        # M4: attach one OpticalPayload per UAV (PAY-001, FLR-009).
+        # Pass a seeded RNG so Bernoulli detection draws are deterministic
+        # and reproducible given the same scenario seed (SIM-003).
         uav.payload = OpticalPayload(
             owner_id=uav.entity_id,
-            detection_engine=DetectionEngine(),
+            rng=np.random.default_rng(int(rng.integers(0, 2 ** 31))),
         )
 
     print(
-        f"M3: {NUM_WHEELED} wheeled | {NUM_TRACKED} tracked | "
+        f"M4: {NUM_WHEELED} wheeled | {NUM_TRACKED} tracked | "
         f"{NUM_PEDESTRIANS} peds | {NUM_UAVS} UAVs | "
         f"{len(nfz_cylinders)} NFZs | {len(road_network)} road nodes"
     )
@@ -226,11 +227,11 @@ def main() -> None:
 
     with sim.logger:
         for step in range(steps):
-            # NF-VIZ-018: window close → break cleanly (logger flushed by context)
+            # NF-VIZ-018: window close → break cleanly; logger flushes on exit
             if plot.window_closed:
                 break
 
-            # NF-VIZ-019: pause → render but skip simulation step
+            # NF-VIZ-019: pause → render without stepping
             if plot.paused:
                 plot.render(sim.entities.living(), sim_time=sim.sim_time)
                 time.sleep(config.dt)

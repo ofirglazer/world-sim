@@ -285,16 +285,17 @@ class TestDetectionEnginePD(unittest.TestCase):
     """POL-001: P(D) model returns correct values."""
 
     def setUp(self) -> None:
-        self.eng = DetectionEngine()
+        # Fixed seed for deterministic Bernoulli draws in P(D) tests (SIM-003)
+        self.eng = DetectionEngine(rng=np.random.default_rng(42))
 
     def test_pd_zero_beyond_range(self) -> None:
-        """POL-001: P(D) = 0 when dist >= DETECT_RANGE_M."""
+        """POL-001: compute_pd() returns 0 when dist >= DETECT_RANGE_M."""
         ent = _make_entity(signature=1.0)
         pd = self.eng.compute_pd(ent, _D.PAY_DETECT_RANGE_M, los_clear=True)
         self.assertAlmostEqual(pd, 0.0)
 
     def test_pd_zero_los_blocked(self) -> None:
-        """POL-001: P(D) = 0 when LOS is blocked."""
+        """POL-001: compute_pd() returns 0 when LOS is blocked."""
         ent = _make_entity(signature=1.0)
         pd = self.eng.compute_pd(ent, 50.0, los_clear=False)
         self.assertAlmostEqual(pd, 0.0)
@@ -307,7 +308,7 @@ class TestDetectionEnginePD(unittest.TestCase):
         self.assertLessEqual(pd, _D.PAY_DETECT_BASE_PD + 1e-6)
 
     def test_pd_scaled_by_signature(self) -> None:
-        """POL-001: lower signature yields lower P(D)."""
+        """POL-001: lower signature yields lower compute_pd() value."""
         ent_hi = _make_entity(signature=1.0)
         ent_lo = _make_entity(signature=0.3)
         pd_hi = self.eng.compute_pd(ent_hi, 100.0, los_clear=True)
@@ -315,7 +316,7 @@ class TestDetectionEnginePD(unittest.TestCase):
         self.assertGreater(pd_hi, pd_lo)
 
     def test_pd_in_unit_interval(self) -> None:
-        """POL-001: P(D) is always in [0, 1]."""
+        """POL-001: compute_pd() always in [0, 1]."""
         ent = _make_entity(signature=1.0)
         for dist in [0.0, 10.0, 100.0, 500.0, 600.0]:
             pd = self.eng.compute_pd(ent, dist, los_clear=True)
@@ -323,13 +324,59 @@ class TestDetectionEnginePD(unittest.TestCase):
             self.assertLessEqual(pd, 1.0)
 
     def test_pd_decreases_with_range(self) -> None:
-        """POL-001: P(D) is monotonically non-increasing with range."""
+        """POL-001: compute_pd() monotonically non-increasing with range."""
         ent = _make_entity(signature=1.0)
         prev_pd = 1.0
         for dist in [20.0, 100.0, 200.0, 350.0, 499.0]:
             pd = self.eng.compute_pd(ent, dist, los_clear=True)
             self.assertLessEqual(pd, prev_pd + 1e-9)
             prev_pd = pd
+
+    def test_bernoulli_draw_zero_pd_never_detects(self) -> None:
+        """POL-001: entities with P(D)=0 are NEVER reported by process_batch."""
+        observer = np.array([0.0, 0.0, 100.0])
+        # Entity beyond detection range -> P(D) = 0
+        ent = _make_entity(pos=np.array([600.0, 0.0, 0.0]), signature=1.0)
+        for _ in range(100):   # many trials: none must fire
+            results = self.eng.process_batch(observer, [ent], [])
+            self.assertEqual(results, [],
+                             "P(D)=0 entity must never appear in results")
+
+    def test_bernoulli_draw_unit_pd_always_detects(self) -> None:
+        """POL-001: P(D)=1 (via AlwaysOne) fires on every trial."""
+
+        class AlwaysOne(DetectionEngine):
+            def compute_pd(self, entity, dist_m, los_clear):
+                return 1.0
+
+        eng = AlwaysOne(rng=np.random.default_rng(0))
+        observer = np.array([0.0, 0.0, 100.0])
+        ent = _make_entity(pos=np.array([50.0, 0.0, 0.0]))
+        for _ in range(20):
+            results = eng.process_batch(observer, [ent], [])
+            self.assertEqual(len(results), 1,
+                             "P(D)=1 entity must always appear in results")
+
+    def test_bernoulli_draw_is_stochastic(self) -> None:
+        """POL-001: P(D) < 1 produces both detections and misses over many trials."""
+        # Use P(D) ≈ 0.5 (mid-range, mid-signature) to maximise variance.
+        eng = DetectionEngine(
+            base_pd=0.6,
+            rng=np.random.default_rng(7),
+        )
+        observer = np.array([0.0, 0.0, 100.0])
+        # dist ≈ 250 m -> range_factor ≈ 0.5 -> pd ≈ 0.6*1.0*0.5 = 0.30
+        ent = _make_entity(
+            pos=np.array([250.0, 0.0, 0.0]), signature=1.0
+        )
+        n_trials = 200
+        n_detected = sum(
+            1 for _ in range(n_trials)
+            if eng.process_batch(observer, [ent], [])
+        )
+        # With pd≈0.30 and 200 trials: expected ≈60; allow wide tolerance
+        self.assertGreater(n_detected, 10, "Too few detections for pd≈0.30")
+        self.assertLess(n_detected, 190, "Too many detections for pd≈0.30")
 
 
 class TestDetectionEnginePlugin(unittest.TestCase):
@@ -342,8 +389,9 @@ class TestDetectionEnginePlugin(unittest.TestCase):
             def compute_pd(self, entity, dist_m, los_clear):
                 return 1.0
 
-        eng = AlwaysOne()
-        ent = _make_entity()
+        # P(D)=1 so Bernoulli draw always succeeds; rng seed is irrelevant
+        eng = AlwaysOne(rng=np.random.default_rng(0))
+        ent = _make_entity(pos=np.array([50.0, 0.0, 0.0]))
         results = eng.process_batch(
             observer=np.array([0.0, 0.0, 100.0]),
             candidates=[ent],
@@ -543,8 +591,10 @@ class TestM4Defaults(unittest.TestCase):
     """NF-M-006: All M4 constants are present and sane."""
 
     def test_fov_positive(self) -> None:
-        """NF-M-006: PAY_FOV_DEG is positive."""
+        """NF-M-006: PAY_FOV_DEG is positive and PAY_FOOTPRINT_MAX_M is absent."""
         self.assertGreater(_D.PAY_FOV_DEG, 0.0)
+        self.assertFalse(hasattr(_D, 'PAY_FOOTPRINT_MAX_M'),
+                         "PAY_FOOTPRINT_MAX_M must not exist; footprint is computed geometrically")
 
     def test_detect_range_positive(self) -> None:
         """NF-M-006: PAY_DETECT_RANGE_M > PAY_DETECT_MIN_RANGE_M."""

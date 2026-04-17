@@ -89,7 +89,7 @@ _NFZ_FILL_COLOUR: str = "#FF0000"    # NFZ fill (alpha applied separately)
 _NFZ_EDGE_COLOUR: str = "#D32F2F"    # NFZ border colour
 _GEOFENCE_COLOUR: str = "#FF6F00"    # Geofence boundary colour
 _FOV_COLOUR: str = "#FFEB3B"         # FOV cone fill colour (NF-VIZ-006 M4)
-_FOV_ALPHA: float = 0.18              # FOV cone transparency
+_FOV_ALPHA: float = 0.38              # FOV cone transparency
 _BACKGROUND_COLOUR: str = "#C0C0C0"  # Background classic silver color of the plot
 _HEADING_ALPHA: float = 0.70         # Arrow transparency
 _NFZ_ALPHA: float = 0.20             # NFZ fill transparency
@@ -414,6 +414,10 @@ class DebugPlot:
             if role is not None:
                 lines.append(f"Role   : {role}")
 
+            payload_mode = getattr(entity.payload, "mode", None).name
+            if payload_mode is not None:
+                lines.append(f"Payload: {payload_mode}")
+
         return "\n".join(lines)
 
     def _draw_inspection_panel(self, entity: Entity) -> None:
@@ -534,8 +538,6 @@ class DebugPlot:
         if ax_bbox.width == 0 or ax_bbox.height == 0:
             return
 
-        # Convert pixel delta to data units using the FROZEN start limits
-        # (not get_xlim()) so accumulated float error cannot build up.
         xlim0 = self._xlim_at_pan_start
         ylim0 = self._ylim_at_pan_start
         dx_data = -dx_disp * (xlim0[1] - xlim0[0]) / ax_bbox.width
@@ -547,26 +549,29 @@ class DebugPlot:
         self._ylim = new_ylim
         self._ax.set_xlim(new_xlim)
         self._ax.set_ylim(new_ylim)
-        # Immediate visual feedback without waiting for next sim step render
+        # draw_idle() schedules the repaint; flush_events() processes the
+        # GUI event queue immediately so the pan renders on every mouse-move
+        # event without waiting for the next plt.pause() in the sim loop.
         self._fig.canvas.draw_idle()
+        self._fig.canvas.flush_events()
 
     def _on_key(self, event: object) -> None:
         """
         Keyboard handler:
-        * "r" / "R"     -> reset view (NF-VIZ-009).
-        * "escape"      -> deselect entity (NF-VIZ-013).
-        * arrow keys    -> pan proportional to view extent (NF-VIZ-017).
-        * VIZ_PAUSE_KEY -> toggle pause/resume (NF-VIZ-019).
+        * "r" / "R"          -> reset view (NF-VIZ-009).
+        * "escape"           -> deselect entity (NF-VIZ-013).
+        * arrow keys         -> pan proportional to view extent (NF-VIZ-017).
+        * VIZ_PAUSE_KEY (" ") -> pause / resume (NF-VIZ-019).
         """
         key = getattr(event, "key", "") or ""
         if key in ("r", "R", _D.VIZ_ZOOM_RESET_KEY):
             self._reset_view()
         elif key in ("escape", _D.VIZ_DESELECT_KEY):
             self._selected_entity_id = None    # NF-VIZ-013
-        elif key == _D.VIZ_PAUSE_KEY:           # NF-VIZ-019
+        elif key == _D.VIZ_PAUSE_KEY:           # NF-VIZ-019 (" " = space)
             self._paused = not self._paused
         elif key == "up":
-            # NF-VIZ-017: step = VIZ_PAN_KEY_STEP_FRAC of current view height
+            # NF-VIZ-017: step = VIZ_PAN_KEY_STEP_FRAC × current view height
             step = _D.VIZ_PAN_KEY_STEP_FRAC * (self._ylim[1] - self._ylim[0])
             new_ylim = (self._ylim[0] + step, self._ylim[1] + step)
             self._ylim = new_ylim
@@ -619,7 +624,7 @@ class DebugPlot:
 
     @property
     def paused(self) -> bool:
-        """True when the simulation is paused via VIZ_PAUSE_KEY (NF-VIZ-019)."""
+        """True when simulation is paused via VIZ_PAUSE_KEY (NF-VIZ-019)."""
         return self._paused
 
     # -------------------------------------------------------------------------
@@ -744,12 +749,19 @@ class DebugPlot:
             ax_xy = payload.fov_axis_world
             aim_deg = _math.degrees(_math.atan2(float(ax_xy[1]), float(ax_xy[0])))
 
-            # Ground footprint radius: altitude / tan(|el|), capped
-            el_deg = payload.gimbal_el_deg
-            el_rad = _math.radians(abs(el_deg)) if el_deg != 0.0 else _math.radians(1.0)
+            # Compute ground footprint radius from geometry (PAY-001):
+            #   slant_range = altitude / sin(|elevation|)
+            #   footprint_r = slant_range * tan(half_fov_angle)
+            # At near-horizon (|el| → 0) the footprint diverges; cap at
+            # PAY_DETECT_RANGE_M since P(D) = 0 beyond that range.
+            el_deg = abs(payload.gimbal_el_deg)
+            el_rad = _math.radians(max(el_deg, 1.0))  # floor at 1° to avoid /0
             alt = max(float(entity.position[2]), 1.0)
-            footprint_r = min(alt / _math.tan(el_rad), _D.PAY_FOOTPRINT_MAX_M)
-            footprint_r = max(footprint_r, 10.0)  # Guard against zero
+            slant_range = alt / _math.sin(el_rad)
+            half_fov_rad = _math.radians(payload.fov_half_angle_deg)
+            footprint_r = slant_range * _math.tan(half_fov_rad)
+            footprint_r = min(footprint_r, _D.PAY_DETECT_RANGE_M)  # physics cap
+            footprint_r = max(footprint_r, 5.0)   # render floor
 
             half_ang = payload.fov_half_angle_deg
             wedge = _mp.Wedge(

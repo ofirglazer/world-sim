@@ -77,6 +77,9 @@ class OpticalPayload:
         Full cone angle of the sensor (default: PAY_FOV_DEG).
     gimbal_rate_dps : float
         Maximum gimbal slew rate in deg/s (PAY-003).
+    rng : np.random.Generator, optional
+        Seeded RNG forwarded to DetectionEngine for Bernoulli draws
+        (SIM-003 determinism).  Defaults to ``np.random.default_rng()``.
 
     Attributes
     ----------
@@ -96,11 +99,16 @@ class OpticalPayload:
         detection_engine: Optional[DetectionEngine] = None,
         fov_deg: float = _D.PAY_FOV_DEG,
         gimbal_rate_dps: float = _D.PAY_GIMBAL_RATE_DPS,
+        rng: Optional[np.random.Generator] = None,
     ) -> None:
+        # Seeded RNG forwarded to DetectionEngine (SIM-003)
+        _rng: np.random.Generator = (
+            rng if rng is not None else np.random.default_rng()
+        )
         self._owner_id: str = owner_id
         self._detection_engine: DetectionEngine = (
             detection_engine if detection_engine is not None
-            else DetectionEngine()
+            else DetectionEngine(rng=_rng)
         )
         self._fov_deg: float = float(fov_deg)
         self._gimbal_rate_dps: float = float(gimbal_rate_dps)
@@ -251,23 +259,23 @@ class OpticalPayload:
         Dispatch to mode-specific gimbal articulation handler (PAY-002, PAY-003).
         """
         if self.mode == GimbalMode.STARE:
-            self._gimbal_stare(uav_pos)
+            self._gimbal_stare(uav_pos, uav_heading_deg)
         elif self.mode == GimbalMode.CUED:
-            self._gimbal_cued(uav_pos, entities)
+            self._gimbal_cued(uav_pos, entities, uav_heading_deg)
         else:
             self._gimbal_scan(dt)
 
-    def _gimbal_stare(self, uav_pos: np.ndarray) -> None:
+    def _gimbal_stare(self, uav_pos: np.ndarray, uav_heading_deg: float) -> None:
         """Slew toward the fixed stare point (STARE mode)."""
         if self._stare_point is None:
             return
         desired_az, desired_el = self._world_point_to_gimbal_angles(
-            uav_pos, self._stare_point
+            uav_pos, self._stare_point, uav_heading_deg
         )
         self._slew_to(desired_az, desired_el)
 
     def _gimbal_cued(
-        self, uav_pos: np.ndarray, entities: List[Entity]
+        self, uav_pos: np.ndarray, entities: List[Entity], uav_heading_deg: float
     ) -> None:
         """Slave gimbal to the tracked entity position (CUED mode, PAY-005)."""
         if self.track_entity_id is None:
@@ -283,7 +291,7 @@ class OpticalPayload:
             self.mode = GimbalMode.SCAN
             return
         desired_az, desired_el = self._world_point_to_gimbal_angles(
-            uav_pos, target.position[:2]
+            uav_pos, target.position[:2], uav_heading_deg
         )
         self._slew_to(desired_az, desired_el)
 
@@ -332,10 +340,19 @@ class OpticalPayload:
         ))
 
     def _world_point_to_gimbal_angles(
-        self, uav_pos: np.ndarray, target_xy: np.ndarray
+        self,
+        uav_pos: np.ndarray,
+        target_xy: np.ndarray,
+        uav_heading_deg: float,
     ) -> Tuple[float, float]:
         """
-        Convert world XY target to gimbal (az, el) relative to UAV heading.
+        Convert a world XY target to gimbal (az, el) relative to UAV heading.
+
+        Azimuth is expressed in the gimbal frame: 0° means directly ahead of
+        the UAV, positive CCW.  Subtracting the UAV heading from the world
+        bearing here keeps ``gimbal_az_deg`` consistent with its documented
+        convention and with ``_compute_aim_vector_world``, which reconstructs
+        the world bearing by adding ``uav_heading_deg + gimbal_az_deg``.
 
         Parameters
         ----------
@@ -343,24 +360,30 @@ class OpticalPayload:
             UAV 3-D position.
         target_xy : np.ndarray
             Target world [x, y] coordinate.
+        uav_heading_deg : float
+            Current UAV heading in degrees (ENU, CCW from East).
 
         Returns
         -------
         tuple[float, float]
-            (azimuth_deg, elevation_deg) in gimbal frame.
+            ``(azimuth_deg, elevation_deg)`` in gimbal frame.
+            azimuth_deg is relative to UAV heading; elevation_deg is
+            negative-down (0 = horizon, -90 = nadir).
         """
         dx = float(target_xy[0]) - float(uav_pos[0])
         dy = float(target_xy[1]) - float(uav_pos[1])
         dz = -float(uav_pos[2])   # target assumed on ground (z=0)
 
-        world_bearing_rad = math.atan2(dy, dx)   # ENU bearing to target
-        # Convert to gimbal azimuth (relative to UAV heading, stored externally)
-        # Caller must subtract UAV heading; we return raw world bearing here and
-        # the render helper subtracts heading when drawing the cone.
+        world_bearing_deg = math.degrees(math.atan2(dy, dx))  # absolute ENU
+
+        # Subtract UAV heading to get azimuth in the gimbal frame (PAY-002).
+        # Wrap to (-180, 180] so _slew_to's rate-limiter always takes the
+        # shortest angular path.
+        gimbal_az_deg = (world_bearing_deg - uav_heading_deg + 180.0) % 360.0 - 180.0
+
         horiz_dist = math.sqrt(dx * dx + dy * dy)
         elevation_deg = math.degrees(math.atan2(dz, max(horiz_dist, 1e-6)))
-        azimuth_world_deg = math.degrees(world_bearing_rad)
-        return azimuth_world_deg, elevation_deg
+        return gimbal_az_deg, elevation_deg
 
     def _compute_aim_vector_world(
         self, uav_heading_deg: float
@@ -413,7 +436,7 @@ class OpticalPayload:
         Returns
         -------
         list[Entity]
-            Entities inside the FOV cone, within PAY_FOOTPRINT_MAX_M.
+            Entities inside the FOV cone, within PAY_DETECT_RANGE_M.
         """
         if not entities:
             return []
@@ -426,9 +449,11 @@ class OpticalPayload:
         dirs = positions - uav_pos                             # (n, 3)
         dists = np.linalg.norm(dirs, axis=1)                   # (n,)
 
-        # Exclude UAV itself (dist ≈ 0) and entities beyond max footprint
+        # Exclude the UAV itself (dist ≈ 0) and entities beyond the maximum
+        # sensor detection range.  PAY_DETECT_RANGE_M is the physically
+        # meaningful limit — P(D) is 0 beyond that range regardless of FOV.
         valid = (dists > _D.PAY_DETECT_MIN_RANGE_M) & (
-            dists < _D.PAY_FOOTPRINT_MAX_M
+            dists < _D.PAY_DETECT_RANGE_M
         )
 
         # Normalise direction vectors (avoid divide-by-zero)
