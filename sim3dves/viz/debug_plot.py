@@ -49,7 +49,7 @@ NF-CE-001..005 compliant.  Implements: NF-VIZ-001..015.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -93,6 +93,8 @@ _FOV_ALPHA: float = 0.38              # FOV cone transparency
 _BACKGROUND_COLOUR: str = "#C0C0C0"  # Background classic silver color of the plot
 _HEADING_ALPHA: float = 0.70         # Arrow transparency
 _NFZ_ALPHA: float = 0.20             # NFZ fill transparency
+_DETECTION_RING_SIZE = 280.0
+_DETECTION_COLOUR = "#FFEB3B"        # yellow detection ring color
 
 # Hit-testing threshold in display pixels (NF-VIZ-010)
 _SELECTION_THRESHOLD_PX: float = 15.0
@@ -195,6 +197,7 @@ class DebugPlot:
         self,
         entities: List[Entity],
         sim_time: float = 0.0,
+        detected_ids: Optional[Set[str]] = None,
     ) -> None:
         """
         Redraw the scene for the current timestep (NF-VIZ-001).
@@ -205,8 +208,15 @@ class DebugPlot:
             Entities to render (typically ``engine.entities.living()``).
         sim_time : float
             Current simulation time in seconds (NF-VIZ-004).
+        detected_ids : set[str], optional
+            Entity IDs confirmed detected in this step (from
+            ``SimulationEngine.step_detections``).  Each matching entity
+            receives a bright flash ring drawn on top of its normal marker.
+            The ring is absent on every step where the entity is not detected,
+            making detections visible only in the step they occur (M4).
         """
         self._last_entities = list(entities)
+        _detected: Set[str] = detected_ids if detected_ids is not None else set()
         self._ax.cla()
 
         # --- Static overlays (behind entities) ---
@@ -292,6 +302,19 @@ class DebugPlot:
                 edgecolors=edge_c, linewidths=lw,
                 zorder=5,
             )
+
+            # Detection flash ring: drawn only for entities confirmed
+            # detected in this step (M4).  Absent next step unless
+            # detected again — creates a per-step flash effect.
+            if entity.entity_id in _detected:
+                self._ax.scatter(
+                    entity.position[0], entity.position[1],
+                    s=_DETECTION_RING_SIZE,
+                    facecolors="none",
+                    edgecolors=_DETECTION_COLOUR,
+                    linewidths=2.5,
+                    zorder=8,       # above everything else
+                )
 
             # Altitude annotation for UAVs (M3)
             if entity.entity_type == EntityType.UAV:
@@ -745,30 +768,39 @@ class DebugPlot:
             if payload.fov_tip_world is None or payload.fov_axis_world is None:
                 continue
 
-            # Aim vector azimuth in degrees (ENU CCW from East)
+            # Aim vector azimuth in degrees (ENU CCW from East).
+            # payload.fov_axis_world is the XY slice of the 3-D unit aim vector.
             ax_xy = payload.fov_axis_world
             aim_deg = _math.degrees(_math.atan2(float(ax_xy[1]), float(ax_xy[0])))
 
-            # Compute ground footprint radius from geometry (PAY-001):
+            # Slant range: distance from UAV to ground along the boresight (PAY-001).
             #   slant_range = altitude / sin(|elevation|)
-            #   footprint_r = slant_range * tan(half_fov_angle)
-            # At near-horizon (|el| → 0) the footprint diverges; cap at
-            # PAY_DETECT_RANGE_M since P(D) = 0 beyond that range.
-            el_deg = abs(payload.gimbal_el_deg)
-            el_rad = _math.radians(max(el_deg, 1.0))  # floor at 1° to avoid /0
+            # This is used as the Wedge radius so the patch represents the full
+            # sensor *beam* from UAV to ground, not just the tiny footprint arc.
+            # At near-horizon (|el| → 0) the slant range diverges; cap at
+            # PAY_DETECT_RANGE_M since P(D) = 0 beyond that distance.
+            el_deg_abs = abs(payload.gimbal_el_deg)
+            el_rad = _math.radians(max(el_deg_abs, 1.0))  # 1° floor avoids /0
             alt = max(float(entity.position[2]), 1.0)
-            slant_range = alt / _math.sin(el_rad)
-            half_fov_rad = _math.radians(payload.fov_half_angle_deg)
-            footprint_r = slant_range * _math.tan(half_fov_rad)
-            footprint_r = min(footprint_r, _D.PAY_DETECT_RANGE_M)  # physics cap
-            footprint_r = max(footprint_r, 5.0)   # render floor
+            slant_range = min(alt / _math.sin(el_rad), _D.PAY_DETECT_RANGE_M)
+            slant_range = max(slant_range, alt)  # never less than nadir distance
 
+            # Angular extent of the wedge.
+            # When |elevation| > 75° (near nadir) the XY aim direction is
+            # unreliable (cos_el ≈ 0) and the footprint is a circle directly
+            # below the UAV — draw a full-circle wedge in that case.
             half_ang = payload.fov_half_angle_deg
+            if el_deg_abs > 75.0:
+                theta1, theta2 = 0.0, 360.0
+            else:
+                theta1 = aim_deg - half_ang
+                theta2 = aim_deg + half_ang
+
             wedge = _mp.Wedge(
                 center=(float(entity.position[0]), float(entity.position[1])),
-                r=footprint_r,
-                theta1=aim_deg - half_ang,
-                theta2=aim_deg + half_ang,
+                r=slant_range,
+                theta1=theta1,
+                theta2=theta2,
                 facecolor=_FOV_COLOUR,
                 edgecolor=_FOV_COLOUR,
                 alpha=_FOV_ALPHA,

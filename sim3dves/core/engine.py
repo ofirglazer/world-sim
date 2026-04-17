@@ -33,10 +33,12 @@ from sim3dves.config.defaults import SimDefaults
 from sim3dves.core.event_bus import Event, EventBus, EventType
 from sim3dves.core.world import World
 from sim3dves.entities.base import Entity, EntityManager, EntityType
-from typing import Union
+from typing import Set, Union
 from sim3dves.logging.logger import Logger
 
 _DEFAULTS = SimDefaults()
+
+
 
 
 class _NullLogger:
@@ -95,6 +97,8 @@ class SimulationEngine:
     - Detect and log NFZ violations for UAV entities (M3, FLR-001).
     - Publish typed events on the EventBus (SIM-002).
     - Delegate structured logging to Logger (LOG-001, LOG-002, LOG-005).
+    - Expose ``step_detections``: the set of entity IDs confirmed detected
+      in the most recent step, for use by the visualiser (M4).
 
     Determinism (SIM-003)
     ---------------------
@@ -163,6 +167,10 @@ class SimulationEngine:
 
         self.sim_time: float = 0.0   # Current simulation time (s)
         self.step_idx: int = 0       # Zero-based step counter
+        # Entity IDs confirmed detected in the most recent step (M4).
+        # Cleared at the top of each step; populated during flush_detections.
+        # Passed to render() so the visualiser can flash a detection ring.
+        self.step_detections: Set[str] = set()
 
     # ### Public API ###
 
@@ -218,12 +226,16 @@ class SimulationEngine:
                     },
                 ))
 
-        # 4. Collect and publish DETECTION events from UAV payloads (M4, PAY-004)
+        # 4. Collect and publish DETECTION events from UAV payloads (M4, PAY-004).
+        # step_detections is reset here so it only ever contains IDs from
+        # the *current* step — the visualiser treats it as a one-frame flash.
+        self.step_detections = set()
         for entity in self.entities.by_type(EntityType.UAV):
             payload = getattr(entity, "payload", None)
             if payload is None:
                 continue
             for det in payload.flush_detections():
+                self.step_detections.add(det["target_id"])  # accumulate for viz
                 self.event_bus.publish(Event(
                     timestamp=self.sim_time,
                     event_type=EventType.DETECTION,

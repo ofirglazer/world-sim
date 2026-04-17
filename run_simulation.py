@@ -269,7 +269,13 @@ def main() -> None:
                     f"({eoi_ped_pos[0]:.0f}, {eoi_ped_pos[1]:.0f})"
                 )
 
-            plot.render(sim.entities.living(), sim_time=sim.sim_time)
+            # Pass step_detections so the visualiser flashes a ring on
+            # every entity confirmed detected this step (M4).
+            plot.render(
+                sim.entities.living(),
+                sim_time=sim.sim_time,
+                detected_ids=sim.step_detections,
+            )
 
             # Real-time pacing: sleep unused dt budget (SIM-006)
             elapsed = time.perf_counter() - wall_start

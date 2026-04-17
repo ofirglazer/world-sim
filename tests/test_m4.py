@@ -505,6 +505,48 @@ class TestEngineDetectionEvent(unittest.TestCase):
         self.assertEqual(len(detected_events), 1)
         self.assertEqual(detected_events[0].payload["target_id"], "t0")
 
+    def test_step_detections_populated_and_reset(self) -> None:
+        """M4: engine.step_detections contains detected IDs for current step only."""
+        world = self._make_world()
+        config = SimulationConfig(logging_enabled=False)
+        sim = SimulationEngine(config, world)
+
+        uav = UAVEntity(
+            entity_id="uav-det",
+            position=np.array([300.0, 300.0, 100.0]),
+            world_extent=np.array([600.0, 600.0]),
+            rng=np.random.default_rng(0),
+        )
+        payload = OpticalPayload(owner_id="uav-det")
+        # Pre-populate two detections
+        payload._pending_detections = [
+            {"uav_id": "uav-det", "target_id": "t1", "pd": 0.9, "los_clear": True},
+            {"uav_id": "uav-det", "target_id": "t2", "pd": 0.8, "los_clear": True},
+        ]
+        uav.payload = payload
+        sim.add_entity(uav)
+
+        with sim.logger:
+            sim.step()
+
+        self.assertIn("t1", sim.step_detections)
+        self.assertIn("t2", sim.step_detections)
+
+        # Step again with empty buffer — set must be cleared
+        with sim.logger:
+            sim.step()
+
+        self.assertEqual(len(sim.step_detections), 0,
+                         "step_detections must be empty when no detections fire")
+
+    def test_step_detections_initial_empty(self) -> None:
+        """M4: step_detections is an empty set before any step runs."""
+        world = self._make_world()
+        config = SimulationConfig(logging_enabled=False)
+        sim = SimulationEngine(config, world)
+        self.assertIsInstance(sim.step_detections, set)
+        self.assertEqual(len(sim.step_detections), 0)
+
     def test_logging_disabled_no_file(self) -> None:
         """SIM-007: logging_enabled=False creates no log file."""
         import os
