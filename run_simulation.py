@@ -29,6 +29,11 @@ M4 scenario additions:
   - DETECTION events published on EventBus and logged (PAY-004, LOG-002).
   - SimulationView used (DebugPlot alias retained for compatibility).
   - Optional logging via SimulationConfig.logging_enabled (SIM-007).
+=================
+M5 scenario additions:
+  - TrackManager active every step; track ellipses in visualiser (NF-VIZ-006 M5).
+  - Autonomous EOI cueing: when a track reaches HIGH quality and is EOI,
+    UAV-0's payload transitions to CUED mode and UAV-0 orbits the track (M5).
 
 NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
@@ -207,12 +212,12 @@ def main() -> None:
         )
 
     print(
-        f"M4: {NUM_WHEELED} wheeled | {NUM_TRACKED} tracked | "
+        f"M5: {NUM_WHEELED} wheeled | {NUM_TRACKED} tracked | "
         f"{NUM_PEDESTRIANS} peds | {NUM_UAVS} UAVs | "
         f"{len(nfz_cylinders)} NFZs | {len(road_network)} road nodes"
     )
     print("Controls: scroll=zoom | right-drag/arrows=pan | R=reset"
-          " | click=select | Esc=deselect | Space=pause/resume | close=stop")
+          " | click=select | Esc=deselect | Space=pause/resume | v=toggle world/C4I view | close=stop")
 
     # ### Visualiser (M3 interactive, NF-VIZ-008..015) ###
     # M4: use SimulationView (DebugPlot alias) with FOV cone support
@@ -238,13 +243,17 @@ def main() -> None:
 
             # NF-VIZ-019: pause → render without stepping; budget unchanged
             if plot.paused:
-                plot.render(sim.entities.living(), sim_time=sim.sim_time)
+                plot.render(
+                    sim.entities.living(),
+                    sim_time=sim.sim_time,
+                    track_manager=sim.track_manager,
+                )
                 time.sleep(config.dt)
                 continue  # step NOT incremented — budget is preserved
 
             wall_start = time.perf_counter()  # wall means the real time elapsed
             elapsed_step = sim.step()
-            # print(f"Elapsed time in sim.step: {elapsed_step:.4f} sec")
+            print(f"Elapsed time in sim.step: {elapsed_step:.4f} sec")
 
             # M4: step each UAV payload (PAY-001..007, NF-P-004)
             living_entities = sim.entities.living()
@@ -257,6 +266,24 @@ def main() -> None:
                         dt=config.dt,
                         structures=world.structures,
                     )
+
+            # M5: autonomous EOI cueing via TrackManager.
+            # When any EOI track reaches HIGH quality, command UAV-0 to orbit
+            # and its payload to CUED mode targeting the tracked entity.
+            for _eoi_track in sim.track_manager.eoi_tracks():
+                from sim3dves.payload.track_manager import TrackQuality
+                if (_eoi_track.quality == TrackQuality.HIGH
+                        and len(uav_entities) > 0
+                        and uav_entities[0].alive):
+                    _uav0 = uav_entities[0]
+                    _pos = _eoi_track.position_xy
+                    _uav0.cue_orbit(
+                        center_xy=_pos,
+                        radius_m=_D.UAV_ORBIT_RADIUS_M,
+                        altitude_m=_D.UAV_CRUISE_ALT_M,
+                    )
+                    if hasattr(_uav0, "payload"):
+                        _uav0.payload.command_cued(_eoi_track.entity_id)
 
             # FLR-009: cue two UAVs to orbit the first EOI at step 30;
             # also command their payloads to CUED mode (PAY-005)
@@ -274,18 +301,19 @@ def main() -> None:
                     f"({eoi_ped_pos[0]:.0f}, {eoi_ped_pos[1]:.0f})"
                 )
 
-            # Pass step_detections so the visualiser flashes a ring on
-            # every entity confirmed detected this step (M4).
+            # Pass step_detections and track_manager so the visualiser can
+            # flash detection rings (M4) and draw track ellipses (M5).
             plot.render(
                 sim.entities.living(),
                 sim_time=sim.sim_time,
                 detected_ids=sim.step_detections,
+                track_manager=sim.track_manager,
             )
 
             # Real-time pacing: sleep unused dt budget (SIM-006)
             elapsed = time.perf_counter() - wall_start
             remaining = config.dt - elapsed
-            # print(remaining)
+            print(f"remaining time is {remaining}")
             if remaining > 0.0:
                 time.sleep(remaining)
             step += 1  # only reached when sim.step() actually ran

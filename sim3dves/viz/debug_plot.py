@@ -36,13 +36,20 @@ M4 features
 * FOV cone overlay per UAV payload (NF-VIZ-006 M4).
 * Renamed to SimulationView (DebugPlot preserved as alias).
 
+M5 features
+-----------
+* Track centroid and covariance ellipse per active TrackState (NF-VIZ-006 M5).
+* Ellipse colour codes track quality: HIGH=green, MEDIUM=yellow, LOW=orange.
+* Track info (quality, age, miss count) added to inspection panel when the
+  selected entity has an active track.
+
 Visualiser roadmap (NF-VIZ-006)
 --------------------------------
 M1 : positions, heading arrows, EOI markers, legend, clock.
 M2 : vehicle types, road network overlay.
 M3 : NFZ circles, geofence, zoom/pan, entity inspection (this file).
 M4 : FOV cone; SimulationView rename (this file).
-M5 : Track centroids and covariance ellipses.
+M5 : Track centroids and covariance ellipses (this file).
 M6 : Full road graph overlay.
 
 NF-CE-001..005 compliant.  Implements: NF-VIZ-001..015.
@@ -62,6 +69,7 @@ from sim3dves.core.world import NFZCylinder
 from sim3dves.entities.base import Entity, EntityType
 from sim3dves.entities.uav import AutopilotMode
 from sim3dves.maps.road_network import RoadNetwork
+from sim3dves.payload.track_manager import TrackManager, TrackQuality
 
 _D = SimDefaults()
 
@@ -91,11 +99,19 @@ _NFZ_EDGE_COLOUR: str = "#D32F2F"    # NFZ border colour
 _GEOFENCE_COLOUR: str = "#FF6F00"    # Geofence boundary colour
 _FOV_COLOUR: str = "#FFEB3B"         # FOV cone fill colour (NF-VIZ-006 M4)
 _FOV_ALPHA: float = 0.38              # FOV cone transparency
-_BACKGROUND_COLOUR: str = "#C0C0C0"  # Background classic silver color of the plot
+_BACKGROUND_COLOUR_WORLD: str = "#C0C0C0"  # Background classic silver color of the plot
+_BACKGROUND_COLOUR_C4I: str = "#000000"  # Background black color of the plot for C4I
 _HEADING_ALPHA: float = 0.70         # Arrow transparency
 _NFZ_ALPHA: float = 0.20             # NFZ fill transparency
 _DETECTION_RING_SIZE = 280.0
 _DETECTION_COLOUR = "#FF00FF"        # magenta detection ring color
+
+# Track quality ellipse colours (NF-VIZ-006 M5)
+_TRACK_COLOUR: Dict[TrackQuality, str] = {
+    TrackQuality.HIGH:   _D.TRK_VIZ_HIGH_COLOUR,
+    TrackQuality.MEDIUM: _D.TRK_VIZ_MEDIUM_COLOUR,
+    TrackQuality.LOW:    _D.TRK_VIZ_LOW_COLOUR,
+}
 
 # Hit-testing threshold in display pixels (NF-VIZ-010)
 _SELECTION_THRESHOLD_PX: float = 15.0
@@ -131,7 +147,7 @@ class DebugPlot:
         world_y: float,
         road_network: Optional[RoadNetwork] = None,
         nfz_cylinders: Optional[List[NFZCylinder]] = None,
-        title: str = "Sim3Dves - Simulation View - phase M3 fixed",
+        title: str = "Sim3Dves - Simulation View - phase M5",
     ) -> None:
         # Guard against re-enabling interactive mode on repeated construction
         if not plt.isinteractive():
@@ -139,7 +155,7 @@ class DebugPlot:
 
         # Reserve 6 % of figure height at the bottom for the Reset button
         self._fig, self._ax = plt.subplots(figsize=(7.5, 7.5))
-        self._ax.set_facecolor(_BACKGROUND_COLOUR)
+        self._ax.set_facecolor(_BACKGROUND_COLOUR_WORLD)
         self._world_x: float = float(world_x)
         self._world_y: float = float(world_y)
         self._fig.subplots_adjust(bottom=0.07)
@@ -173,6 +189,9 @@ class DebugPlot:
         # --- Pause / resume state (NF-VIZ-019) ---
         self._paused: bool = False
 
+        # --- World view / C4I view ---
+        self._c4i_view: bool = False
+
         # --- Reset button (NF-VIZ-009) ---
         ax_btn = self._fig.add_axes([0.80, 0.01, 0.18, 0.04])
         self._btn_reset = Button(
@@ -199,6 +218,7 @@ class DebugPlot:
         entities: List[Entity],
         sim_time: float = 0.0,
         detected_ids: Optional[Set[str]] = None,
+        track_manager: Optional[TrackManager] = None,
     ) -> None:
         """
         Redraw the scene for the current timestep (NF-VIZ-001).
@@ -215,10 +235,17 @@ class DebugPlot:
             receives a bright flash ring drawn on top of its normal marker.
             The ring is absent on every step where the entity is not detected,
             making detections visible only in the step they occur (M4).
+        track_manager : TrackManager, optional
+            If provided, track centroids and covariance ellipses are drawn
+            for every active TrackState, colour-coded by quality (NF-VIZ-006 M5).
         """
         self._last_entities = list(entities)
+        # Store for _build_panel_text track info lookup (M5)
+        self._last_track_manager: Optional[TrackManager] = track_manager
         _detected: Set[str] = detected_ids if detected_ids is not None else set()
         self._ax.cla()
+        self._ax.set_facecolor(_BACKGROUND_COLOUR_C4I if self._c4i_view else _BACKGROUND_COLOUR_WORLD)
+
 
         # --- Static overlays (behind entities) ---
         self._draw_geofence()                           # NF-VIZ-006 M3
@@ -227,6 +254,8 @@ class DebugPlot:
         if self._nfz_cylinders:
             self._draw_nfz_circles()                    # NF-VIZ-006 M3
         self._draw_fov_cones(entities)                  # NF-VIZ-006 M4
+        if track_manager is not None:
+            self._draw_track_ellipses(track_manager)    # NF-VIZ-006 M5
 
         # --- Partition entities ---
         living: List[Entity] = [e for e in entities if e.alive]
@@ -290,7 +319,13 @@ class DebugPlot:
                 self._ax.plot(line_x, line_y, linestyle='dashed', color=_SELECTED_COLOUR)
 
         # Living entities — colour and shape by type (NF-VIZ-002)
-        for entity in living:
+        # for entity in living:
+        if self._c4i_view:
+            displayed_living = (living_uav for living_uav in living if living_uav.entity_type == EntityType.UAV)
+        else:
+            displayed_living = living
+
+        for entity in displayed_living:
             colour = _TYPE_COLOURS.get(entity.entity_type, "#607D8B")
             marker = _TYPE_MARKERS.get(entity.entity_type, "o")
             size = 120 if entity.is_eoi else 70
@@ -358,9 +393,10 @@ class DebugPlot:
         self._ax.set_ylabel("North (m)")
         # NF-VIZ-019: show pause state in title bar
         _pause_str = "  [PAUSED]" if self._paused else ""
+        _c4i_view_str = "      [C4I View]" if self._c4i_view else " [WORLD View]"
         self._ax.set_title(
             f"3DVES  t={sim_time:.1f}s  step={self._step}  "
-            f"alive={len(living)}  dead={len(dead)}{_pause_str}"
+            f"alive={len(living)}  dead={len(dead)}{_c4i_view_str}{_pause_str}"
         )
         self._ax.grid(True, alpha=0.20, linestyle="--")
         self._ax.set_aspect("equal", adjustable="box")
@@ -447,9 +483,24 @@ class DebugPlot:
             if role is not None:
                 lines.append(f"Role   : {role}")
 
-            payload_mode = getattr(entity.payload, "mode", None).name
-            if payload_mode is not None:
-                lines.append(f"Payload: {payload_mode}")
+            # Use getattr to handle UAVs that have no payload attached
+            _payload = getattr(entity, "payload", None)
+            _pmode = getattr(_payload, "mode", None)
+            if _pmode is not None:
+                lines.append(f"Payload: {_pmode.name}")
+
+        # Track info — shown for any entity type that has an active track (M5)
+        _track = getattr(self, "_last_track_manager", None)
+        if _track is not None:
+            ts = _track.get_track(entity.entity_id)
+            if ts is not None:
+                lines.append(f"TrkQual: {ts.quality.name}")
+                lines.append(f"TrkAge : {ts.age_steps} steps")
+                lines.append(f"TrkMiss: {ts.miss_count}")
+                ep = ts.position_xy
+                lines.append(
+                    f"TrkPos : ({ep[0]:.0f}, {ep[1]:.0f})"
+                )
 
         return "\n".join(lines)
 
@@ -595,6 +646,7 @@ class DebugPlot:
         * "escape"           -> deselect entity (NF-VIZ-013).
         * arrow keys         -> pan proportional to view extent (NF-VIZ-017).
         * VIZ_PAUSE_KEY (" ") -> pause / resume (NF-VIZ-019).
+        * "v"                -> switch between world view and C4I view.
         """
         key = getattr(event, "key", "") or ""
         if key in ("r", "R", _D.VIZ_ZOOM_RESET_KEY):
@@ -628,6 +680,8 @@ class DebugPlot:
             self._xlim = new_xlim
             self._ax.set_xlim(new_xlim)
             self._fig.canvas.draw_idle()
+        elif key == "v":
+            self._c4i_view = not self._c4i_view  # toggle view
 
     def _reset_view(self) -> None:
         """
@@ -821,6 +875,76 @@ class DebugPlot:
                 zorder=4,
             )
             self._ax.add_patch(wedge)
+    def _draw_track_ellipses(self, track_manager: TrackManager) -> None:
+        """
+        Draw Kalman-filter covariance ellipses and centroids (NF-VIZ-006 M5).
+
+        For each active TrackState the 2×2 position sub-block of the state
+        covariance matrix is decomposed into its eigenvectors to determine
+        the ellipse semi-axes and rotation angle.  The ellipse is scaled to
+        the 1-σ confidence boundary.
+
+        Ellipse colour encodes track quality:
+          HIGH   → green   (TRK_VIZ_HIGH_COLOUR)
+          MEDIUM → yellow  (TRK_VIZ_MEDIUM_COLOUR)
+          LOW    → orange  (TRK_VIZ_LOW_COLOUR)
+
+        A small centroid dot is drawn at the estimated position.
+
+        Parameters
+        ----------
+        track_manager : TrackManager
+            The engine's track registry; iterated over active_tracks.
+        """
+        import math as _math
+
+        for track in track_manager.active_tracks.values():
+            colour = _TRACK_COLOUR.get(track.quality, _D.TRK_VIZ_LOW_COLOUR)
+            cx, cy = float(track.position_xy[0]), float(track.position_xy[1])
+
+            # --- Covariance ellipse via eigendecomposition of P_pos (2×2) ---
+            P_pos = track.position_covariance         # (2, 2)
+            try:
+                eigvals, eigvecs = np.linalg.eigh(P_pos)
+                # Clamp negative eigenvalues (numerical noise) to a tiny positive
+                eigvals = np.maximum(eigvals, 1e-6)
+                # Semi-axes = 1-sigma = sqrt(eigenvalue)
+                width  = 2.0 * _math.sqrt(float(eigvals[1]))   # major (larger)
+                height = 2.0 * _math.sqrt(float(eigvals[0]))   # minor (smaller)
+                # Rotation angle: eigenvec of largest eigenvalue vs East axis
+                angle_rad = _math.atan2(
+                    float(eigvecs[1, 1]), float(eigvecs[0, 1])
+                )
+                angle_deg = _math.degrees(angle_rad)
+            except (np.linalg.LinAlgError, ValueError):
+                # Fallback: unit circle if eigendecomposition fails
+                width = height = 2.0
+                angle_deg = 0.0
+
+            ellipse = mpatches.Ellipse(
+                xy=(cx, cy),
+                width=max(width, 1.0),
+                height=max(height, 1.0),
+                angle=angle_deg,
+                facecolor="none",
+                edgecolor=colour,
+                linewidth=1.8,
+                linestyle="--",
+                alpha=_D.TRK_VIZ_ELLIPSE_ALPHA,
+                zorder=9,    # above entity markers
+            )
+            self._ax.add_patch(ellipse)
+
+            # --- Centroid dot ---
+            self._ax.scatter(
+                cx, cy,
+                s=_D.TRK_VIZ_CENTROID_SIZE,
+                c=colour,
+                marker="+",
+                linewidths=1.8,
+                zorder=10,
+            )
+
     def _draw_legend(self) -> None:
         """Build and attach the legend (NF-VIZ-005)."""
         handles = [
@@ -850,6 +974,15 @@ class DebugPlot:
                     alpha=_NFZ_ALPHA, linewidth=1.5, label="NFZ",
                 )
             )
+        # Track quality legend entries (M5)
+        if getattr(self, "_last_track_manager", None) is not None:
+            for quality, colour in _TRACK_COLOUR.items():
+                handles.append(
+                    mpatches.Patch(
+                        facecolor="none", edgecolor=colour,
+                        linewidth=2.0, label=f"Track {quality.name}",
+                    )
+                )
         self._ax.legend(
             handles=handles, loc="upper right",
             fontsize=7, framealpha=0.85,
