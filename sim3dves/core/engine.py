@@ -104,6 +104,13 @@ class SimulationEngine:
       step from step_detections; TRACK_ACQUIRED/TRACK_LOST events published
       on the EventBus and written to JSONL (M5).
 
+    M5 architecture note
+    --------------------
+    Payload stepping is no longer performed here.  ``UAVEntity._update_behavior``
+    advances its own ``payload`` component (step 7 of the UAV FSM) so the engine
+    needs no payload-specific code.  Detection events are still collected here
+    via ``payload.flush_detections()`` because the engine owns the EventBus.
+
     Determinism (SIM-003)
     ---------------------
     ``np.random.default_rng(seed)`` is used in preference to the deprecated
@@ -295,6 +302,12 @@ class SimulationEngine:
     def run(self) -> None:
         """
         Execute the full scenario duration headlessly (SIM-005).
+
+        Prefer ``SimulationRunner`` (``sim3dves.core.runner``) for both
+        headless and interactive use — it handles real-time pacing, pause,
+        and window-close cleanly.  This method is retained for backwards
+        compatibility and for minimal headless scripts that do not need
+        real-time pacing.
 
         The Logger is used as a context manager here to guarantee the
         JSONL file is flushed and closed even if an exception escapes

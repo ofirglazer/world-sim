@@ -860,8 +860,15 @@ class TestPerEntityNeighborRadius(unittest.TestCase):
         self.assertAlmostEqual(ped.neighbor_radius_m, _D.NEIGHBOR_RADIUS_M)
 
     def test_uav_uses_larger_radius(self) -> None:
-        """M3 base.py: UAV uses UAV_NEIGHBOR_RADIUS_M."""
-        self.assertAlmostEqual(_make_uav().neighbor_radius_m, _D.UAV_NEIGHBOR_RADIUS_M)
+        """M3/M5: UAV neighbor_radius_m covers both separation and detection range.
+
+        M5 fix: the radius must be max(UAV_NEIGHBOR_RADIUS_M, PAY_DETECT_RANGE_M)
+        so that payload.step() inside _update_behavior receives all entities
+        within sensor range as detection candidates.
+        """
+        import math
+        expected = max(_D.UAV_NEIGHBOR_RADIUS_M, _D.PAY_DETECT_RANGE_M)
+        self.assertAlmostEqual(_make_uav().neighbor_radius_m, expected)
 
 
 # =============================================================================

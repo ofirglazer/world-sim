@@ -45,6 +45,13 @@ v1.2 Bug Fixes
   delegate to the shared _steer_toward_heading() helper.
 * Redundant min() in _do_waypoint collapsed to a single expression.
 
+M5 addition
+-----------
+UAVEntity._update_behavior() now steps its attached ``payload`` component
+(if any) at the end of each tick, after all flight rules.  This keeps
+payload stepping automatic and headless-safe: the engine and scenario
+scripts need no payload-specific code.
+
 NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
 NF-CE-003: NumPy-format docstrings.
@@ -331,14 +338,29 @@ class UAVEntity(Entity):
     @property
     def neighbor_radius_m(self) -> float:
         """
-        Larger search radius for UAV-UAV separation detection (FLR-004).
+        Neighbor search radius for this UAV (used by EntityManager).
+
+        Must cover two independent requirements:
+
+        * **FLR-004 UAV-UAV separation**: ``UAV_NEIGHBOR_RADIUS_M`` (200 m)
+          ensures peer UAVs enter the context before reaching the 50 m
+          separation threshold.
+        * **PAY-001 payload detection**: ``PAY_DETECT_RANGE_M`` (500 m)
+          ensures all entities within sensor range appear in
+          ``context.neighbors`` so ``_update_behavior`` step 7 can pass
+          them to ``payload.step()`` as detection candidates.
+
+        Before M5, payload stepping happened in ``run_simulation.py`` with
+        the full living-entity list.  Now that the payload is stepped
+        inside ``_update_behavior``, the context must be wide enough to
+        supply it with the same set of candidates.
 
         Returns
         -------
         float
-            UAV_NEIGHBOR_RADIUS_M -- larger than the ground-entity default.
+            ``max(UAV_NEIGHBOR_RADIUS_M, PAY_DETECT_RANGE_M)``.
         """
-        return _D.UAV_NEIGHBOR_RADIUS_M
+        return max(_D.UAV_NEIGHBOR_RADIUS_M, _D.PAY_DETECT_RANGE_M)
 
     # ### Public cue API ###
 
@@ -386,6 +408,9 @@ class UAVEntity(Entity):
            UAV separation (FLR-004).
         5. Corner-escape / geofence check (FLR-005, FLR-011).
         6. Deconfliction role update (FLR-010).
+        7. Payload step — if a payload component is attached, advance it
+           after all flight-rule corrections so it sees the final heading
+           and position for this tick (M5).
 
         Parameters
         ----------
@@ -446,6 +471,20 @@ class UAVEntity(Entity):
 
         # 6. Deconfliction role (FLR-010)
         self._update_deconfliction_role(context)
+
+        # 7. Payload step (M5): advance the attached optical payload after all
+        #    flight-rule corrections.  Payload sees the final heading/position
+        #    for this tick.  context.neighbors supplies the candidate entity
+        #    list for FOV filtering; an empty list is safe (no detections).
+        _payload = getattr(self, "payload", None)
+        if _payload is not None:
+            _neighbors = context.neighbors if context is not None else []
+            _payload.step(
+                uav_position=self.position,
+                uav_heading_deg=self.heading,
+                entities=_neighbors,
+                dt=dt,
+            )
 
         self.state = EntityState.MOVING
 
