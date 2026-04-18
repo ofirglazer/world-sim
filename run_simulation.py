@@ -70,10 +70,10 @@ GRID_ROWS = 10  # _D.GRID_ROWS  # can overide 6, 6, 100.0
 GRID_COLS = 10  # _D.GRID_COLS  # can overide 6, 6, 100.0
 GRID_SPACING_M = _D.GRID_SPACING_M  # can overide 6, 6, 100.0
 GRID_ORIGIN = _D.GRID_ORIGIN  # can overide np.array([50.0, 50.0])
-NUM_WHEELED = 1  # _D.NUM_WHEELED  # can overide 12
-NUM_TRACKED = 1  # _D.NUM_TRACKED  # can overide 5
-NUM_PEDESTRIANS = 30  # _D.NUM_PEDESTRIANS  # can overide 40
-NUM_UAVS = 1  # _D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
+NUM_WHEELED = _D.NUM_WHEELED  # 1  # _D.NUM_WHEELED  # can overide 12
+NUM_TRACKED = _D.NUM_TRACKED  # 1  # _D.NUM_TRACKED  # can overide 5
+NUM_PEDESTRIANS = _D.NUM_PEDESTRIANS  #30  # _D.NUM_PEDESTRIANS  # can overide 40
+NUM_UAVS = _D.NUM_UAVS  # 1  # _D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
 
 # NFZ cylinders placed to exercise FLR-001 avoidance
 NFZ_DEFINITIONS = []  # _D.NFZ_DEFINITIONS
