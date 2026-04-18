@@ -35,6 +35,7 @@ from sim3dves.core.world import World
 from sim3dves.entities.base import Entity, EntityManager, EntityType
 from typing import Set, Union
 from sim3dves.logging.logger import Logger
+from sim3dves.payload.track_manager import TrackManager, TrackState
 
 _DEFAULTS = SimDefaults()
 
@@ -99,6 +100,9 @@ class SimulationEngine:
     - Delegate structured logging to Logger (LOG-001, LOG-002, LOG-005).
     - Expose ``step_detections``: the set of entity IDs confirmed detected
       in the most recent step, for use by the visualiser (M4).
+    - Advance ``track_manager``: Kalman-filter track lifecycle updated each
+      step from step_detections; TRACK_ACQUIRED/TRACK_LOST events published
+      on the EventBus and written to JSONL (M5).
 
     Determinism (SIM-003)
     ---------------------
@@ -164,6 +168,13 @@ class SimulationEngine:
         self.event_bus.subscribe(
             EventType.DETECTION, self._handle_detection
         )
+        # M5: wire track lifecycle events to logger (LOG-002)
+        self.event_bus.subscribe(
+            EventType.TRACK_ACQUIRED, self._handle_track_event
+        )
+        self.event_bus.subscribe(
+            EventType.TRACK_LOST, self._handle_track_event
+        )
 
         self.sim_time: float = 0.0   # Current simulation time (s)
         self.step_idx: int = 0       # Zero-based step counter
@@ -171,6 +182,13 @@ class SimulationEngine:
         # Cleared at the top of each step; populated during flush_detections.
         # Passed to render() so the visualiser can flash a detection ring.
         self.step_detections: Set[str] = set()
+
+        # TrackManager: Kalman-filter track registry updated each step (M5).
+        # Callbacks publish TRACK_ACQUIRED / TRACK_LOST events on the bus.
+        self.track_manager: TrackManager = TrackManager(
+            on_track_acquired=self._on_track_acquired,
+            on_track_lost=self._on_track_lost,
+        )
 
     # ### Public API ###
 
@@ -252,7 +270,15 @@ class SimulationEngine:
                     payload=det,
                 ))
 
-        # 5. Log living entities only — dead entities add noise, not value
+        # 5. Advance TrackManager: Kalman predict + update from detections (M5)
+        living_for_track = self.entities.living()
+        self.track_manager.step(
+            detected_ids=self.step_detections,
+            entities=living_for_track,
+            dt=dt,
+        )
+
+        # 6. Log living entities only — dead entities add noise, not value
         wall_dt = time.perf_counter() - wall_start
         self.logger.log_step(
             self.step_idx,
@@ -317,6 +343,53 @@ class SimulationEngine:
         """
         self.logger.log_event({
             "type": EventType.DETECTION.name,
+            "timestamp": event.timestamp,
+            **event.payload,
+        })
+
+    def _on_track_acquired(self, entity_id: str, track: TrackState) -> None:
+        """
+        Callback from TrackManager when a track reaches MEDIUM quality (M5).
+
+        Publishes TRACK_ACQUIRED on the EventBus so the logger and any other
+        subscribers (e.g. a future ROE module) receive the event.
+        """
+        self.event_bus.publish(Event(
+            timestamp=self.sim_time,
+            event_type=EventType.TRACK_ACQUIRED,
+            payload={
+                "entity_id": entity_id,
+                "quality":   track.quality.name,
+                "is_eoi":    track.is_eoi,
+                "pos":       track.position_xy.tolist(),
+            },
+        ))
+
+    def _on_track_lost(self, entity_id: str, track: TrackState) -> None:
+        """
+        Callback from TrackManager when a track is removed (M5).
+
+        Publishes TRACK_LOST on the EventBus.
+        """
+        self.event_bus.publish(Event(
+            timestamp=self.sim_time,
+            event_type=EventType.TRACK_LOST,
+            payload={
+                "entity_id":  entity_id,
+                "age_steps":  track.age_steps,
+                "miss_count": track.miss_count,
+                "pos":        track.position_xy.tolist(),
+            },
+        ))
+
+    def _handle_track_event(self, event: Event) -> None:
+        """
+        Write TRACK_ACQUIRED / TRACK_LOST records to JSONL (LOG-002, M5).
+
+        Subscribed to both EventType.TRACK_ACQUIRED and EventType.TRACK_LOST.
+        """
+        self.logger.log_event({
+            "type":      event.event_type.name,
             "timestamp": event.timestamp,
             **event.payload,
         })

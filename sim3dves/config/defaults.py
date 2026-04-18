@@ -19,6 +19,8 @@ M3 v1.3     : SIM_LOGGING_ENABLED (SIM-007), VIZ_PAN_KEY_STEP_FRAC
               (NF-VIZ-017), VIZ_PAUSE_KEY corrected to " " (NF-VIZ-019).
 M4 additions: PAY_* optical payload constants (PAY-001..007, POL-001,
               NF-P-004, PAY-005).
+M5 additions: TRK_* TrackManager constants (Kalman filter, quality tiers,
+              visualiser ellipse colours).
 """
 from dataclasses import dataclass
 import numpy
@@ -213,3 +215,29 @@ class SimDefaults:
     # ### Tracking gate (PAY-005) ###
     PAY_TRACK_GATE_M: float = 50.0            # Max position update jump (m)
     PAY_CUED_DWELL_S: float = 3.0             # Dwell time before cueing UAV orbit (s)
+
+    # ==========================================================================
+    # TrackManager subsystem (M5)
+    # ==========================================================================
+
+    # ### Kalman filter parameters (M5) ###
+    # Constant-velocity 4-state model: x = [x, y, vx, vy].
+    # Process noise standard deviation (m/s²) for unmodelled acceleration.
+    TRK_PROCESS_NOISE_STD: float = 2.0   # Process noise σ (m/s²)
+    # Measurement noise standard deviation (m) for sensor position error.
+    TRK_MEAS_NOISE_STD: float = 5.0      # Measurement noise σ (m)
+
+    # ### Track lifecycle thresholds (M5) ###
+    # Consecutive missed detection steps before a track degrades to LOST.
+    TRK_MAX_MISS_STEPS: int = 30         # Steps before track is lost
+    # Consecutive hits required to reach each quality tier.
+    TRK_HIGH_HIT_COUNT: int = 5          # Consecutive detections for HIGH quality
+    TRK_MEDIUM_HIT_COUNT: int = 2        # Consecutive detections for MEDIUM quality
+
+    # ### Visualiser track overlay (NF-VIZ-006 M5) ###
+    # Covariance ellipse colours by track quality tier.
+    TRK_VIZ_HIGH_COLOUR: str = "#00E676"    # Bright green  — HIGH quality
+    TRK_VIZ_MEDIUM_COLOUR: str = "#FFEA00"  # Yellow        — MEDIUM quality
+    TRK_VIZ_LOW_COLOUR: str = "#FF6D00"     # Orange        — LOW quality
+    TRK_VIZ_ELLIPSE_ALPHA: float = 0.50     # Covariance ellipse transparency
+    TRK_VIZ_CENTROID_SIZE: float = 60.0     # Track centroid scatter size (pts²)
