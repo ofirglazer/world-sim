@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 sim3dves.viz.debug_plot
 =======================
@@ -94,7 +95,7 @@ _BACKGROUND_COLOUR: str = "#C0C0C0"  # Background classic silver color of the pl
 _HEADING_ALPHA: float = 0.70         # Arrow transparency
 _NFZ_ALPHA: float = 0.20             # NFZ fill transparency
 _DETECTION_RING_SIZE = 280.0
-_DETECTION_COLOUR = "#FFEB3B"        # yellow detection ring color
+_DETECTION_COLOUR = "#FF00FF"        # magenta detection ring color
 
 # Hit-testing threshold in display pixels (NF-VIZ-010)
 _SELECTION_THRESHOLD_PX: float = 15.0
@@ -366,7 +367,11 @@ class DebugPlot:
 
         plt.draw()
         plt.pause(0.001)
-        self._step += 1
+        # Only advance the render-step counter when the simulation is
+        # running — paused renders replay the same frame repeatedly and
+        # must not change the displayed step number (NF-VIZ-019 fix).
+        if not self._paused:
+            self._step += 1
 
     # -------------------------------------------------------------------------
     # Inspection panel helpers
@@ -425,12 +430,17 @@ class DebugPlot:
 
             low_fuel = getattr(entity, "low_fuel", None)
             if low_fuel is not None:
-                flag = "YES ⚠" if low_fuel else "no"
+                flag = "YES" if low_fuel else "no"
                 lines.append(f"LowFuel: {flag}")
 
-            nfz_viol = getattr(entity, "nfz_violated", None)
+            # Prefer the engine-maintained persistent flag (set every step
+            # by SimulationEngine, Bug 2 fix) so the panel always reflects
+            # current state.  Fall back to the on-demand property for tests
+            # that call _build_panel_text without running the engine.
+            nfz_viol = getattr(entity, "_nfz_violated_flag",
+                               getattr(entity, "nfz_violated", None))
             if nfz_viol is not None:
-                flag = "VIOLATION ✗" if nfz_viol else "clear"
+                flag = "VIOLATION" if nfz_viol else "clear"
                 lines.append(f"NFZ    : {flag}")
 
             role = getattr(entity, "deconfliction_role", None)
@@ -768,10 +778,14 @@ class DebugPlot:
             if payload.fov_tip_world is None or payload.fov_axis_world is None:
                 continue
 
-            # Aim vector azimuth in degrees (ENU CCW from East).
-            # payload.fov_axis_world is the XY slice of the 3-D unit aim vector.
-            ax_xy = payload.fov_axis_world
-            aim_deg = _math.degrees(_math.atan2(float(ax_xy[1]), float(ax_xy[0])))
+            # Use _world_gimbal_az_deg (absolute ENU, the authoritative
+            # internal state) for the wedge direction.  This is the same
+            # value used by _compute_aim_vector_world and by the detection
+            # FOV test, so the visualised cone always matches actual detection.
+            # Using entity.heading + gimbal_az_deg was wrong because a
+            # heading snap (e.g. on orbit-mode entry) caused an instant cone
+            # jump even though _world_gimbal_az_deg changed smoothly.
+            aim_deg = getattr(payload, "_world_gimbal_az_deg", 0.0) % 360.0
 
             # Slant range: distance from UAV to ground along the boresight (PAY-001).
             #   slant_range = altitude / sin(|elevation|)

@@ -108,17 +108,18 @@ class TestGimbalRateLimit(unittest.TestCase):
     def test_slew_rate_capped(self) -> None:
         """PAY-003: one-step az change cannot exceed rate * dt."""
         p = _make_payload()
-        p.gimbal_az_deg = 0.0
+        p._world_gimbal_az_deg = 0.0
         # Command a 180° jump — rate-limiter should cap it
-        p._slew_to(180.0, -45.0)
-        max_step = _D.PAY_GIMBAL_RATE_DPS * 0.1  # dt=0.1
-        self.assertLessEqual(abs(p.gimbal_az_deg), max_step + 1e-6)
+        # _slew_to now operates on _world_gimbal_az_deg; uav_heading=0
+        p._slew_to(180.0, -45.0, 0.1, uav_heading_deg=0.0)
+        max_step = _D.PAY_GIMBAL_RATE_DPS * 0.1
+        self.assertLessEqual(abs(p._world_gimbal_az_deg), max_step + 1e-6)
 
     def test_elevation_rate_capped(self) -> None:
         """PAY-003: elevation change per step is capped."""
         p = _make_payload()
         p.gimbal_el_deg = 0.0
-        p._slew_to(0.0, -90.0)
+        p._slew_to(0.0, -90.0, 0.1, uav_heading_deg=0.0)
         max_step = _D.PAY_GIMBAL_RATE_DPS * 0.1
         self.assertGreaterEqual(p.gimbal_el_deg, -max_step - 1e-6)
 
@@ -127,25 +128,27 @@ class TestGimbalLimits(unittest.TestCase):
     """PAY-002, PAY-003: gimbal hardware limits are enforced."""
 
     def test_az_clamped_to_range(self) -> None:
-        """PAY-002: azimuth never exceeds ±AZ_RANGE/2."""
+        """PAY-002: world_gimbal_az never exceeds UAV heading ± AZ_RANGE/2."""
         p = _make_payload()
+        p._world_gimbal_az_deg = 0.0
         for _ in range(200):
-            p._slew_to(999.0, -45.0)
+            p._slew_to(999.0, -45.0, 0.1, uav_heading_deg=0.0)
         limit = _D.PAY_GIMBAL_AZ_RANGE_DEG / 2.0
-        self.assertLessEqual(p.gimbal_az_deg, limit + 1e-6)
+        # body_az = _world_gimbal_az_deg - uav_heading (=0) must be <= limit
+        self.assertLessEqual(p._world_gimbal_az_deg, limit + 1e-6)
 
     def test_el_clamped_below_nadir(self) -> None:
         """PAY-003: elevation never goes below PAY_GIMBAL_EL_MIN_DEG."""
         p = _make_payload()
         for _ in range(200):
-            p._slew_to(0.0, -999.0)
+            p._slew_to(0.0, -999.0, 0.1)
         self.assertGreaterEqual(p.gimbal_el_deg, _D.PAY_GIMBAL_EL_MIN_DEG - 1e-6)
 
     def test_el_clamped_above_horizon(self) -> None:
         """PAY-003: elevation never exceeds PAY_GIMBAL_EL_MAX_DEG."""
         p = _make_payload()
         for _ in range(200):
-            p._slew_to(0.0, 999.0)
+            p._slew_to(0.0, 999.0, 0.1)
         self.assertLessEqual(p.gimbal_el_deg, _D.PAY_GIMBAL_EL_MAX_DEG + 1e-6)
 
 
@@ -177,14 +180,15 @@ class TestGimbalScanSweeps(unittest.TestCase):
     """PAY-002: SCAN mode sweeps azimuth over time."""
 
     def test_scan_azimuth_changes(self) -> None:
-        """PAY-002: azimuth changes each step in SCAN mode."""
+        """PAY-002: world-space aim azimuth changes each step in SCAN mode."""
         p = _make_payload()
         p.command_scan()
-        az_before = p.gimbal_az_deg
-        p._gimbal_scan(dt=0.1)
-        p._gimbal_scan(dt=0.1)
-        # After two steps the angle must have changed
-        self.assertNotAlmostEqual(p.gimbal_az_deg, az_before, places=3)
+        world_az_before = p._world_gimbal_az_deg
+        # _gimbal_scan slews _world_gimbal_az_deg; gimbal_az_deg is derived
+        # inside payload.step() — check the authoritative internal state.
+        p._gimbal_scan(uav_heading_deg=0.0, dt=0.1)
+        p._gimbal_scan(uav_heading_deg=0.0, dt=0.1)
+        self.assertNotAlmostEqual(p._world_gimbal_az_deg, world_az_before, places=3)
 
 
 class TestAimVectorWorld(unittest.TestCase):

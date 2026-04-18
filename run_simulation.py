@@ -226,16 +226,21 @@ def main() -> None:
     steps = int(config.duration_s / config.dt)
 
     with sim.logger:
-        for step in range(steps):
+        # NF-VIZ-018/019: use a while loop so the step budget is only consumed
+        # when a real simulation step executes.  A 'continue' in the pause
+        # branch of a for-loop would silently advance the loop counter even
+        # though sim.step() was never called (Bug 1 fix).
+        step = 0
+        while step < steps:
             # NF-VIZ-018: window close → break cleanly; logger flushes on exit
             if plot.window_closed:
                 break
 
-            # NF-VIZ-019: pause → render without stepping
+            # NF-VIZ-019: pause → render without stepping; budget unchanged
             if plot.paused:
                 plot.render(sim.entities.living(), sim_time=sim.sim_time)
                 time.sleep(config.dt)
-                continue
+                continue  # step NOT incremented — budget is preserved
 
             wall_start = time.perf_counter()  # wall means the real time elapsed
             elapsed_step = sim.step()
@@ -283,6 +288,7 @@ def main() -> None:
             # print(remaining)
             if remaining > 0.0:
                 time.sleep(remaining)
+            step += 1  # only reached when sim.step() actually ran
 
     alive_uavs = len(sim.entities.by_type(EntityType.UAV))
     print(

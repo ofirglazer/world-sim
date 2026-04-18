@@ -212,11 +212,21 @@ class SimulationEngine:
                     },
                 ))
 
-        # 3. NFZ violation monitoring for UAVs (M3, FLR-001, LOG-002)
+        # 3. NFZ violation monitoring for UAVs (M3, FLR-001, LOG-002).
         #    The UAV's own avoidance logic (FLR-001) should prevent entry;
-        #    this check logs any residual penetration for post-analysis.
+        #    this check logs residual penetration AND keeps a per-entity
+        #    persistent flag (_nfz_violated_flag) so the inspection panel
+        #    reflects current violation state every step (Bug 2 fix).
         for entity in self.entities.by_type(EntityType.UAV):
-            if self.world.in_nfz(entity.position):
+            # Use both the world's NFZ list and the entity's own list so
+            # the flag is accurate regardless of which source is populated.
+            violated = self.world.in_nfz(entity.position) or bool(
+                getattr(entity, "nfz_violated", False)
+            )
+            # Write back a plain bool attribute so the panel can read it
+            # without calling the property (which needs _nfz_cylinders set).
+            entity._nfz_violated_flag = violated
+            if violated:
                 self.event_bus.publish(Event(
                     timestamp=self.sim_time,
                     event_type=EventType.NFZ_VIOLATION,

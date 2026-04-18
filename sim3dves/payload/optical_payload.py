@@ -114,7 +114,15 @@ class OpticalPayload:
         self._gimbal_rate_dps: float = float(gimbal_rate_dps)
 
         # Gimbal state (PAY-002, PAY-003)
-        self.gimbal_az_deg: float = 0.0          # Relative to UAV heading
+        # _world_gimbal_az_deg is the authoritative internal state: the
+        # absolute ENU azimuth the gimbal is currently pointing toward.
+        # Slewing operates on this world-space angle so that UAV heading
+        # changes (e.g. the instantaneous heading snap when entering orbit
+        # mode) do NOT cause a visual jump in the cone direction.
+        # gimbal_az_deg (heading-relative) is derived from it each step
+        # for external API and panel display.
+        self._world_gimbal_az_deg: float = 0.0   # Absolute ENU aim azimuth (deg)
+        self.gimbal_az_deg: float = 0.0          # Heading-relative az (derived)
         self.gimbal_el_deg: float = -90.0        # Start pointing nadir
         self.mode: GimbalMode = GimbalMode.SCAN  # Default: area search
 
@@ -198,6 +206,12 @@ class OpticalPayload:
         # 1. Articulate gimbal per active mode (PAY-002, PAY-003)
         self._update_gimbal(uav_position, uav_heading_deg, entities, dt)
 
+        # Derive heading-relative az for external API and panel display.
+        # Done after _update_gimbal so the slewed _world_gimbal_az_deg is used.
+        self.gimbal_az_deg = (
+            (self._world_gimbal_az_deg - uav_heading_deg + 180.0) % 360.0 - 180.0
+        )
+
         # 2. Compute world-space aim axis for FOV queries (PAY-001)
         aim_world = self._compute_aim_vector_world(uav_heading_deg)
         self.fov_tip_world = uav_position.copy()
@@ -259,23 +273,29 @@ class OpticalPayload:
         Dispatch to mode-specific gimbal articulation handler (PAY-002, PAY-003).
         """
         if self.mode == GimbalMode.STARE:
-            self._gimbal_stare(uav_pos, uav_heading_deg)
+            self._gimbal_stare(uav_pos, uav_heading_deg, dt)
         elif self.mode == GimbalMode.CUED:
-            self._gimbal_cued(uav_pos, entities, uav_heading_deg)
+            self._gimbal_cued(uav_pos, entities, uav_heading_deg, dt)
         else:
-            self._gimbal_scan(dt)
+            self._gimbal_scan(uav_heading_deg, dt)
 
-    def _gimbal_stare(self, uav_pos: np.ndarray, uav_heading_deg: float) -> None:
+    def _gimbal_stare(
+        self, uav_pos: np.ndarray, uav_heading_deg: float, dt: float
+    ) -> None:
         """Slew toward the fixed stare point (STARE mode)."""
         if self._stare_point is None:
             return
-        desired_az, desired_el = self._world_point_to_gimbal_angles(
-            uav_pos, self._stare_point, uav_heading_deg
+        desired_az_world, desired_el = self._world_point_to_aim_angles(
+            uav_pos, self._stare_point
         )
-        self._slew_to(desired_az, desired_el)
+        self._slew_to(desired_az_world, desired_el, dt, uav_heading_deg)
 
     def _gimbal_cued(
-        self, uav_pos: np.ndarray, entities: List[Entity], uav_heading_deg: float
+        self,
+        uav_pos: np.ndarray,
+        entities: List[Entity],
+        uav_heading_deg: float,
+        dt: float,
     ) -> None:
         """Slave gimbal to the tracked entity position (CUED mode, PAY-005)."""
         if self.track_entity_id is None:
@@ -290,69 +310,87 @@ class OpticalPayload:
             self.track_entity_id = None
             self.mode = GimbalMode.SCAN
             return
-        desired_az, desired_el = self._world_point_to_gimbal_angles(
-            uav_pos, target.position[:2], uav_heading_deg
+        desired_az_world, desired_el = self._world_point_to_aim_angles(
+            uav_pos, target.position[:2]
         )
-        self._slew_to(desired_az, desired_el)
+        self._slew_to(desired_az_world, desired_el, dt, uav_heading_deg)
 
-    def _gimbal_scan(self, dt: float) -> None:
+    def _gimbal_scan(self, uav_heading_deg: float, dt: float) -> None:
         """Sinusoidal azimuth sweep at constant depression (SCAN mode)."""
         self._scan_angle_rad += math.radians(self._scan_speed_dps) * dt
         az_half = _D.PAY_GIMBAL_AZ_RANGE_DEG / 2.0
-        desired_az = az_half * math.sin(self._scan_angle_rad)
+        # Scan is defined in body frame; convert to world space before
+        # passing to _slew_to so the rate limit acts on world-space motion.
+        body_az = az_half * math.sin(self._scan_angle_rad)
+        desired_az_world = uav_heading_deg + body_az
         desired_el = (_D.PAY_GIMBAL_EL_MIN_DEG + _D.PAY_GIMBAL_EL_MAX_DEG) / 2.0
-        self._slew_to(desired_az, desired_el)
+        self._slew_to(desired_az_world, desired_el, dt, uav_heading_deg)
 
     # ### Gimbal geometry helpers ###
 
-    def _slew_to(self, desired_az: float, desired_el: float) -> None:
+    def _slew_to(
+        self,
+        desired_az_world: float,
+        desired_el: float,
+        dt: float,
+        uav_heading_deg: float = 0.0,
+    ) -> None:
         """
-        Rate-limited slew toward (desired_az, desired_el) (PAY-003).
+        Rate-limited slew of the world-space gimbal azimuth (PAY-003).
+
+        Operates on ``_world_gimbal_az_deg`` (absolute ENU), not on the
+        heading-relative ``gimbal_az_deg``.  This ensures UAV heading
+        changes do not appear as sudden cone jumps in the visualiser.
 
         Parameters
         ----------
-        desired_az : float
-            Desired gimbal azimuth (degrees, relative to UAV heading).
+        desired_az_world : float
+            Desired absolute ENU azimuth (degrees).
         desired_el : float
-            Desired gimbal elevation (degrees).
+            Desired gimbal elevation (degrees, negative-down).
+        dt : float
+            Simulation timestep (s); determines per-step slew budget.
+        uav_heading_deg : float
+            Current UAV heading in ENU degrees; used to enforce the
+            body-frame azimuth hardware limit (PAY-002).
         """
-        # Clamp to gimbal limits (PAY-002, PAY-003)
+        max_step = self._gimbal_rate_dps * dt   # per-step angular budget (PAY-003)
+
+        # Slew world-space azimuth at the rate limit (PAY-003)
+        delta_az = (desired_az_world - self._world_gimbal_az_deg + 180.0) % 360.0 - 180.0
+        self._world_gimbal_az_deg += float(np.clip(delta_az, -max_step, max_step))
+
+        # Enforce body-frame azimuth hardware limit (PAY-002).
+        # Convert to body frame, clamp, then convert back to world frame.
         az_limit = _D.PAY_GIMBAL_AZ_RANGE_DEG / 2.0
-        desired_az = float(np.clip(desired_az, -az_limit, az_limit))
-        desired_el = float(
-            np.clip(desired_el, _D.PAY_GIMBAL_EL_MIN_DEG, _D.PAY_GIMBAL_EL_MAX_DEG)
-        )
+        body_az = (self._world_gimbal_az_deg - uav_heading_deg + 180.0) % 360.0 - 180.0
+        body_az = float(np.clip(body_az, -az_limit, az_limit))
+        self._world_gimbal_az_deg = uav_heading_deg + body_az
 
-        # Rate-limit each axis independently (PAY-003)
-        max_step = _D.PAY_GIMBAL_RATE_DPS * 0.1  # dt=0.1 assumed; use param if needed
-        def _step(current: float, target: float) -> float:
-            delta = target - current
-            delta = (delta + 180.0) % 360.0 - 180.0  # wrap to (-180, 180]
-            return current + float(np.clip(delta, -max_step, max_step))
-
-        self.gimbal_az_deg = _step(self.gimbal_az_deg, desired_az)
+        # Slew elevation at the rate limit and clamp to hardware range (PAY-003)
+        delta_el = float(np.clip(
+            desired_el - self.gimbal_el_deg, -max_step, max_step
+        ))
         self.gimbal_el_deg = float(np.clip(
-            self.gimbal_el_deg + float(np.clip(
-                desired_el - self.gimbal_el_deg, -max_step, max_step
-            )),
+            self.gimbal_el_deg + delta_el,
             _D.PAY_GIMBAL_EL_MIN_DEG,
             _D.PAY_GIMBAL_EL_MAX_DEG,
         ))
 
-    def _world_point_to_gimbal_angles(
+    def _world_point_to_aim_angles(
         self,
         uav_pos: np.ndarray,
         target_xy: np.ndarray,
-        uav_heading_deg: float,
     ) -> Tuple[float, float]:
         """
-        Convert a world XY target to gimbal (az, el) relative to UAV heading.
+        Convert a world XY target to absolute ENU aim angles.
 
-        Azimuth is expressed in the gimbal frame: 0° means directly ahead of
-        the UAV, positive CCW.  Subtracting the UAV heading from the world
-        bearing here keeps ``gimbal_az_deg`` consistent with its documented
-        convention and with ``_compute_aim_vector_world``, which reconstructs
-        the world bearing by adding ``uav_heading_deg + gimbal_az_deg``.
+        Returns world-space azimuth (not heading-relative) so that
+        ``_slew_to`` can operate on ``_world_gimbal_az_deg`` directly.
+        This decouples the rate-limited slew from UAV heading changes:
+        if the heading snaps (e.g. on orbit-mode entry), the world-space
+        aim is unaffected — the gimbal holds its world position while the
+        body-frame compensation converges at the rate limit.
 
         Parameters
         ----------
@@ -360,15 +398,13 @@ class OpticalPayload:
             UAV 3-D position.
         target_xy : np.ndarray
             Target world [x, y] coordinate.
-        uav_heading_deg : float
-            Current UAV heading in degrees (ENU, CCW from East).
 
         Returns
         -------
         tuple[float, float]
-            ``(azimuth_deg, elevation_deg)`` in gimbal frame.
-            azimuth_deg is relative to UAV heading; elevation_deg is
-            negative-down (0 = horizon, -90 = nadir).
+            ``(world_az_deg, elevation_deg)`` — both in ENU degrees.
+            world_az_deg is the absolute ENU bearing to the target.
+            elevation_deg is negative-down (0 = horizon, -90 = nadir).
         """
         dx = float(target_xy[0]) - float(uav_pos[0])
         dy = float(target_xy[1]) - float(uav_pos[1])
@@ -376,14 +412,9 @@ class OpticalPayload:
 
         world_bearing_deg = math.degrees(math.atan2(dy, dx))  # absolute ENU
 
-        # Subtract UAV heading to get azimuth in the gimbal frame (PAY-002).
-        # Wrap to (-180, 180] so _slew_to's rate-limiter always takes the
-        # shortest angular path.
-        gimbal_az_deg = (world_bearing_deg - uav_heading_deg + 180.0) % 360.0 - 180.0
-
         horiz_dist = math.sqrt(dx * dx + dy * dy)
         elevation_deg = math.degrees(math.atan2(dz, max(horiz_dist, 1e-6)))
-        return gimbal_az_deg, elevation_deg
+        return world_bearing_deg, elevation_deg
 
     def _compute_aim_vector_world(
         self, uav_heading_deg: float
@@ -401,8 +432,8 @@ class OpticalPayload:
         np.ndarray
             Unit 3-D ENU aim vector [dx, dy, dz].
         """
-        # Absolute azimuth = UAV heading + gimbal azimuth (both in ENU CCW)
-        abs_az_rad = math.radians(uav_heading_deg + self.gimbal_az_deg)
+        # _world_gimbal_az_deg is already in absolute ENU — no heading addition needed.
+        abs_az_rad = math.radians(self._world_gimbal_az_deg)
         el_rad = math.radians(self.gimbal_el_deg)
 
         cos_el = math.cos(el_rad)
