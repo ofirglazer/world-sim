@@ -33,20 +33,20 @@ from sim3dves.config.defaults import SimDefaults
 from sim3dves.core.event_bus import Event, EventBus, EventType
 from sim3dves.core.world import World
 from sim3dves.entities.base import Entity, EntityManager, EntityType
-from typing import Union
+from typing import Set, Union
 from sim3dves.logging.logger import Logger
 
 _DEFAULTS = SimDefaults()
 
 
+
+
 class _NullLogger:
     """
-    No-op logger used when SimulationConfig.logging_enabled is False (SIM-007).
+    No-op logger activated when SimulationConfig.logging_enabled is False (SIM-007).
 
-    Implements the same context-manager and logging interface as Logger so
-    that SimulationEngine can always call ``with self.logger:`` and
-    ``self.logger.log_step()`` without conditional guards — the disabled path
-    simply does nothing and never opens a file.
+    Implements identical interface to Logger so SimulationEngine call-sites
+    require no conditional guards — the disabled path is transparent.
     """
 
     def __enter__(self) -> "_NullLogger":
@@ -97,6 +97,8 @@ class SimulationEngine:
     - Detect and log NFZ violations for UAV entities (M3, FLR-001).
     - Publish typed events on the EventBus (SIM-002).
     - Delegate structured logging to Logger (LOG-001, LOG-002, LOG-005).
+    - Expose ``step_detections``: the set of entity IDs confirmed detected
+      in the most recent step, for use by the visualiser (M4).
 
     Determinism (SIM-003)
     ---------------------
@@ -158,9 +160,17 @@ class SimulationEngine:
         self.event_bus.subscribe(
             EventType.NFZ_VIOLATION, self._handle_nfz_violation
         )
+        # M4: wire DETECTION events to logger (LOG-002, PAY-004)
+        self.event_bus.subscribe(
+            EventType.DETECTION, self._handle_detection
+        )
 
         self.sim_time: float = 0.0   # Current simulation time (s)
         self.step_idx: int = 0       # Zero-based step counter
+        # Entity IDs confirmed detected in the most recent step (M4).
+        # Cleared at the top of each step; populated during flush_detections.
+        # Passed to render() so the visualiser can flash a detection ring.
+        self.step_detections: Set[str] = set()
 
     # ### Public API ###
 
@@ -202,11 +212,21 @@ class SimulationEngine:
                     },
                 ))
 
-        # 3. NFZ violation monitoring for UAVs (M3, FLR-001, LOG-002)
+        # 3. NFZ violation monitoring for UAVs (M3, FLR-001, LOG-002).
         #    The UAV's own avoidance logic (FLR-001) should prevent entry;
-        #    this check logs any residual penetration for post-analysis.
+        #    this check logs residual penetration AND keeps a per-entity
+        #    persistent flag (_nfz_violated_flag) so the inspection panel
+        #    reflects current violation state every step (Bug 2 fix).
         for entity in self.entities.by_type(EntityType.UAV):
-            if self.world.in_nfz(entity.position):
+            # Use both the world's NFZ list and the entity's own list so
+            # the flag is accurate regardless of which source is populated.
+            violated = self.world.in_nfz(entity.position) or bool(
+                getattr(entity, "nfz_violated", False)
+            )
+            # Write back a plain bool attribute so the panel can read it
+            # without calling the property (which needs _nfz_cylinders set).
+            entity._nfz_violated_flag = violated
+            if violated:
                 self.event_bus.publish(Event(
                     timestamp=self.sim_time,
                     event_type=EventType.NFZ_VIOLATION,
@@ -216,7 +236,23 @@ class SimulationEngine:
                     },
                 ))
 
-        # 4. Log living entities only — dead entities add noise, not value
+        # 4. Collect and publish DETECTION events from UAV payloads (M4, PAY-004).
+        # step_detections is reset here so it only ever contains IDs from
+        # the *current* step — the visualiser treats it as a one-frame flash.
+        self.step_detections = set()
+        for entity in self.entities.by_type(EntityType.UAV):
+            payload = getattr(entity, "payload", None)
+            if payload is None:
+                continue
+            for det in payload.flush_detections():
+                self.step_detections.add(det["target_id"])  # accumulate for viz
+                self.event_bus.publish(Event(
+                    timestamp=self.sim_time,
+                    event_type=EventType.DETECTION,
+                    payload=det,
+                ))
+
+        # 5. Log living entities only — dead entities add noise, not value
         wall_dt = time.perf_counter() - wall_start
         self.logger.log_step(
             self.step_idx,
@@ -268,6 +304,19 @@ class SimulationEngine:
         """
         self.logger.log_event({
             "type": EventType.NFZ_VIOLATION.name,
+            "timestamp": event.timestamp,
+            **event.payload,
+        })
+
+    def _handle_detection(self, event: Event) -> None:
+        """
+        Write a DETECTION event record to the JSONL stream (LOG-002, PAY-004).
+
+        Subscribed to EventBus in __init__.  Published each step for every
+        entity detected inside any UAV payload FOV with P(D) > threshold.
+        """
+        self.logger.log_event({
+            "type": EventType.DETECTION.name,
             "timestamp": event.timestamp,
             **event.payload,
         })
