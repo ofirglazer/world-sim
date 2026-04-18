@@ -217,7 +217,7 @@ def main() -> None:
         f"{len(nfz_cylinders)} NFZs | {len(road_network)} road nodes"
     )
     print("Controls: scroll=zoom | right-drag/arrows=pan | R=reset"
-          " | click=select | Esc=deselect | Space=pause/resume | close=stop")
+          " | click=select | Esc=deselect | Space=pause/resume | v=toggle world/C4I view | close=stop")
 
     # ### Visualiser (M3 interactive, NF-VIZ-008..015) ###
     # M4: use SimulationView (DebugPlot alias) with FOV cone support
@@ -253,7 +253,7 @@ def main() -> None:
 
             wall_start = time.perf_counter()  # wall means the real time elapsed
             elapsed_step = sim.step()
-            # print(f"Elapsed time in sim.step: {elapsed_step:.4f} sec")
+            print(f"Elapsed time in sim.step: {elapsed_step:.4f} sec")
 
             # M4: step each UAV payload (PAY-001..007, NF-P-004)
             living_entities = sim.entities.living()
@@ -313,7 +313,7 @@ def main() -> None:
             # Real-time pacing: sleep unused dt budget (SIM-006)
             elapsed = time.perf_counter() - wall_start
             remaining = config.dt - elapsed
-            # print(remaining)
+            print(f"remaining time is {remaining}")
             if remaining > 0.0:
                 time.sleep(remaining)
             step += 1  # only reached when sim.step() actually ran

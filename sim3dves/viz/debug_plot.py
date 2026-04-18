@@ -99,7 +99,8 @@ _NFZ_EDGE_COLOUR: str = "#D32F2F"    # NFZ border colour
 _GEOFENCE_COLOUR: str = "#FF6F00"    # Geofence boundary colour
 _FOV_COLOUR: str = "#FFEB3B"         # FOV cone fill colour (NF-VIZ-006 M4)
 _FOV_ALPHA: float = 0.38              # FOV cone transparency
-_BACKGROUND_COLOUR: str = "#C0C0C0"  # Background classic silver color of the plot
+_BACKGROUND_COLOUR_WORLD: str = "#C0C0C0"  # Background classic silver color of the plot
+_BACKGROUND_COLOUR_C4I: str = "#000000"  # Background black color of the plot for C4I
 _HEADING_ALPHA: float = 0.70         # Arrow transparency
 _NFZ_ALPHA: float = 0.20             # NFZ fill transparency
 _DETECTION_RING_SIZE = 280.0
@@ -146,7 +147,7 @@ class DebugPlot:
         world_y: float,
         road_network: Optional[RoadNetwork] = None,
         nfz_cylinders: Optional[List[NFZCylinder]] = None,
-        title: str = "Sim3Dves - Simulation View - phase M3 fixed",
+        title: str = "Sim3Dves - Simulation View - phase M5",
     ) -> None:
         # Guard against re-enabling interactive mode on repeated construction
         if not plt.isinteractive():
@@ -154,7 +155,7 @@ class DebugPlot:
 
         # Reserve 6 % of figure height at the bottom for the Reset button
         self._fig, self._ax = plt.subplots(figsize=(7.5, 7.5))
-        self._ax.set_facecolor(_BACKGROUND_COLOUR)
+        self._ax.set_facecolor(_BACKGROUND_COLOUR_WORLD)
         self._world_x: float = float(world_x)
         self._world_y: float = float(world_y)
         self._fig.subplots_adjust(bottom=0.07)
@@ -187,6 +188,9 @@ class DebugPlot:
 
         # --- Pause / resume state (NF-VIZ-019) ---
         self._paused: bool = False
+
+        # --- World view / C4I view ---
+        self._c4i_view: bool = False
 
         # --- Reset button (NF-VIZ-009) ---
         ax_btn = self._fig.add_axes([0.80, 0.01, 0.18, 0.04])
@@ -240,6 +244,8 @@ class DebugPlot:
         self._last_track_manager: Optional[TrackManager] = track_manager
         _detected: Set[str] = detected_ids if detected_ids is not None else set()
         self._ax.cla()
+        self._ax.set_facecolor(_BACKGROUND_COLOUR_C4I if self._c4i_view else _BACKGROUND_COLOUR_WORLD)
+
 
         # --- Static overlays (behind entities) ---
         self._draw_geofence()                           # NF-VIZ-006 M3
@@ -313,7 +319,13 @@ class DebugPlot:
                 self._ax.plot(line_x, line_y, linestyle='dashed', color=_SELECTED_COLOUR)
 
         # Living entities — colour and shape by type (NF-VIZ-002)
-        for entity in living:
+        # for entity in living:
+        if self._c4i_view:
+            displayed_living = (living_uav for living_uav in living if living_uav.entity_type == EntityType.UAV)
+        else:
+            displayed_living = living
+
+        for entity in displayed_living:
             colour = _TYPE_COLOURS.get(entity.entity_type, "#607D8B")
             marker = _TYPE_MARKERS.get(entity.entity_type, "o")
             size = 120 if entity.is_eoi else 70
@@ -381,9 +393,10 @@ class DebugPlot:
         self._ax.set_ylabel("North (m)")
         # NF-VIZ-019: show pause state in title bar
         _pause_str = "  [PAUSED]" if self._paused else ""
+        _c4i_view_str = "      [C4I View]" if self._c4i_view else " [WORLD View]"
         self._ax.set_title(
             f"3DVES  t={sim_time:.1f}s  step={self._step}  "
-            f"alive={len(living)}  dead={len(dead)}{_pause_str}"
+            f"alive={len(living)}  dead={len(dead)}{_c4i_view_str}{_pause_str}"
         )
         self._ax.grid(True, alpha=0.20, linestyle="--")
         self._ax.set_aspect("equal", adjustable="box")
@@ -633,6 +646,7 @@ class DebugPlot:
         * "escape"           -> deselect entity (NF-VIZ-013).
         * arrow keys         -> pan proportional to view extent (NF-VIZ-017).
         * VIZ_PAUSE_KEY (" ") -> pause / resume (NF-VIZ-019).
+        * "v"                -> switch between world view and C4I view.
         """
         key = getattr(event, "key", "") or ""
         if key in ("r", "R", _D.VIZ_ZOOM_RESET_KEY):
@@ -666,6 +680,8 @@ class DebugPlot:
             self._xlim = new_xlim
             self._ax.set_xlim(new_xlim)
             self._fig.canvas.draw_idle()
+        elif key == "v":
+            self._c4i_view = not self._c4i_view  # toggle view
 
     def _reset_view(self) -> None:
         """
