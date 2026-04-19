@@ -48,6 +48,20 @@ orchestration.  All of that lives in:
   - UAVEntity         (sim3dves.entities.uav)     — payload stepping
   - CueingPolicy      (sim3dves.payload.cueing_policy) — orbit cueing rule
 
+BUG-011 fix
+-----------
+The HighQualityEoiCueingPolicy is now subscribed to EventType.TRACK_QUALITY_HIGH
+instead of EventType.TRACK_ACQUIRED.  TRACK_QUALITY_HIGH fires at the
+MEDIUM→HIGH quality promotion; TRACK_ACQUIRED continues to fire at LOW→MEDIUM.
+This satisfies both test_m5.py (TRACK_ACQUIRED fires once at MEDIUM) and
+test_runner.py (the policy only cues when quality is HIGH).
+
+BUG-007 fix
+-----------
+SimDefaults.GRID_ORIGIN is now a plain ``Tuple[float, float]`` (immutable,
+frozen-dataclass safe).  The call to RoadNetwork.build_grid() wraps it in
+``np.array()`` explicitly, as that function expects an ndarray.
+
 NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
 NF-M-006: All numeric constants from SimDefaults (no magic numbers).
@@ -88,7 +102,9 @@ WORLD_Y = 1500  # _D.WORLD_EXTENT_Y_M  # can overide 600.0
 GRID_ROWS = 10  # _D.GRID_ROWS  # can overide 6, 6, 100.0
 GRID_COLS = 10  # _D.GRID_COLS  # can overide 6, 6, 100.0
 GRID_SPACING_M = _D.GRID_SPACING_M  # can overide 6, 6, 100.0
-GRID_ORIGIN = _D.GRID_ORIGIN  # can overide np.array([50.0, 50.0])
+# BUG-007 fix: GRID_ORIGIN is now a tuple in SimDefaults; wrap in np.array()
+# for RoadNetwork.build_grid() which expects an ndarray.
+GRID_ORIGIN = np.array(_D.GRID_ORIGIN)  # np.array([50.0, 50.0])
 NUM_WHEELED = _D.NUM_WHEELED  # 1  # _D.NUM_WHEELED  # can overide 12
 NUM_TRACKED = _D.NUM_TRACKED  # 1  # _D.NUM_TRACKED  # can overide 5
 NUM_PEDESTRIANS = _D.NUM_PEDESTRIANS  # 30  # _D.NUM_PEDESTRIANS  # can overide 40
@@ -213,16 +229,21 @@ def main() -> None:
         uav_entities.append(uav)
 
     # ### M5: register autonomous cueing policy on the EventBus ###
-    # HighQualityEoiCueingPolicy reacts to TRACK_ACQUIRED events: when an EOI
-    # track reaches HIGH quality, it autonomously cues UAV-0 to orbit the
-    # estimated track position and switches the payload to CUED mode.
+    # HighQualityEoiCueingPolicy reacts to TRACK_QUALITY_HIGH events: when an
+    # EOI track first reaches HIGH quality, it autonomously cues UAV-0 to orbit
+    # the estimated track position and switches the payload to CUED mode.
+    #
+    # BUG-011 fix: subscribe to TRACK_QUALITY_HIGH (MEDIUM→HIGH transition),
+    # NOT to TRACK_ACQUIRED (LOW→MEDIUM transition).  This ensures:
+    #   - TRACK_ACQUIRED fires once at MEDIUM (test_m5.py contract preserved).
+    #   - The policy only cues on HIGH confidence (test_runner.py contract).
     # No cueing logic lives in the step loop — the EventBus wires it here once.
     cueing_policy = HighQualityEoiCueingPolicy(
         uav_entities=uav_entities,
         track_manager=sim.track_manager,
     )
     sim.event_bus.subscribe(
-        EventType.TRACK_ACQUIRED, cueing_policy.on_track_acquired
+        EventType.TRACK_QUALITY_HIGH, cueing_policy.on_track_acquired
     )
 
     print(

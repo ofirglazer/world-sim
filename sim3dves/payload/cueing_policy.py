@@ -5,17 +5,27 @@ CueingPolicy: EventBus subscriber that autonomously commands UAV orbits
 and payload CUED mode when a tracked EOI reaches HIGH quality (M5).
 
 Design Pattern: Observer — registered as a subscriber to
-``EventType.TRACK_ACQUIRED`` on the engine's EventBus.  The engine fires
-the event; the policy reacts without any coupling to the run loop or the
-visualiser.
+``EventType.TRACK_QUALITY_HIGH`` on the engine's EventBus.  The engine
+fires the event; the policy reacts without any coupling to the run loop
+or the visualiser.
 
-This is the correct home for the autonomous cueing rule that previously
-lived in ``run_simulation.py``.  Moving it here achieves:
-  * **Headless safety** — works identically with or without a visualiser.
-  * **Testability** — the policy can be unit-tested by firing synthetic
-    events, with no engine or scenario setup needed.
-  * **Replaceability** — swap or subclass for different rules of
-    engagement without touching the engine or the scenario.
+BUG-010 / BUG-011 fix
+----------------------
+Previously this policy subscribed to ``EventType.TRACK_ACQUIRED``, which
+fires at LOW→MEDIUM quality.  Because the policy guard required
+``track.quality == TrackQuality.HIGH``, it could never trigger — the
+re-fetched track was MEDIUM when the event arrived.
+
+The fix introduces a dedicated ``EventType.TRACK_QUALITY_HIGH`` event
+(fired by TrackManager's new ``on_track_quality_high`` callback at the
+MEDIUM→HIGH transition) and subscribes this policy to that event instead.
+This independently satisfies both test contracts:
+  - test_m5.py  : TRACK_ACQUIRED still fires exactly once at MEDIUM.
+  - test_runner.py: cue_orbit is called only when quality is HIGH.
+
+The guard ``track.quality != TrackQuality.HIGH`` is retained as a
+defensive double-check; it will now always pass when reached because the
+event itself is only published at HIGH quality.
 
 NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
@@ -38,13 +48,13 @@ _D = SimDefaults()
 
 class HighQualityEoiCueingPolicy:
     """
-    Cue the primary UAV to orbit an EOI when its track reaches HIGH quality.
+    Cue the primary UAV to orbit an EOI when its track first reaches HIGH quality.
 
-    Subscribes to ``EventType.TRACK_ACQUIRED``.  On each event, if the
-    track is for an EOI entity and its quality is HIGH, the first living
-    UAV in ``uav_entities`` is commanded to orbit the track's estimated
-    position and its payload (if any) transitions to CUED mode targeting
-    that entity.
+    Subscribes to ``EventType.TRACK_QUALITY_HIGH`` (BUG-011 fix; previously
+    TRACK_ACQUIRED).  On each event, if the track is for an EOI entity and its
+    quality is HIGH, the first living UAV in ``uav_entities`` is commanded to
+    orbit the track's estimated position and its payload (if any) transitions
+    to CUED mode targeting that entity.
 
     Only the first living UAV is cued (index 0).  For multi-UAV cueing
     extend this class or register additional policy instances. TODO
@@ -72,7 +82,10 @@ class HighQualityEoiCueingPolicy:
         from sim3dves.core.event_bus import EventType
 
         policy = HighQualityEoiCueingPolicy(uav_entities, sim.track_manager)
-        sim.event_bus.subscribe(EventType.TRACK_ACQUIRED, policy.on_track_acquired)
+        # BUG-011 fix: subscribe to TRACK_QUALITY_HIGH, not TRACK_ACQUIRED
+        sim.event_bus.subscribe(
+            EventType.TRACK_QUALITY_HIGH, policy.on_track_acquired
+        )
     """
 
     def __init__(
@@ -87,15 +100,20 @@ class HighQualityEoiCueingPolicy:
         self._orbit_radius_m: float = float(orbit_radius_m)
         self._orbit_altitude_m: float = float(orbit_altitude_m)
         # Track entity IDs that have already been cued to avoid re-cueing
-        # on every TRACK_ACQUIRED event (which fires once, but guard anyway)
+        # on every event (which fires once at MEDIUM→HIGH, but guard anyway).
         self._cued_ids: set = set()
 
     def on_track_acquired(self, event: Event) -> None:
         """
-        React to a TRACK_ACQUIRED event from the engine (M5).
+        React to a TRACK_QUALITY_HIGH event from the engine (BUG-011 fix).
 
         Cues the primary UAV if the event is for a HIGH-quality EOI track
         that has not already been cued this session.
+
+        Although the method is named ``on_track_acquired`` for EventBus
+        compatibility (the subscriber signature is a bare callable), it is
+        now subscribed to ``EventType.TRACK_QUALITY_HIGH``, not
+        ``EventType.TRACK_ACQUIRED``.
 
         Parameters
         ----------
@@ -115,6 +133,7 @@ class HighQualityEoiCueingPolicy:
         track = self._track_manager.get_track(entity_id)
         if track is None:
             return
+        # Defensive guard: event should only arrive at HIGH, but verify
         if track.quality != TrackQuality.HIGH:
             return
 

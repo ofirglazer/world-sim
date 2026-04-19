@@ -14,6 +14,16 @@ M3 changes
   LOG-002).  The entity is NOT killed — avoidance is the UAV's responsibility.
 * _handle_nfz_violation() added as EventBus subscriber.
 
+M5 fix (BUG-011)
+----------------
+* TrackManager now receives an ``on_track_quality_high`` callback in addition
+  to ``on_track_acquired``.  When a track first promotes from MEDIUM to HIGH
+  quality, ``_on_track_quality_high`` publishes a TRACK_QUALITY_HIGH event on
+  the EventBus.  The HighQualityEoiCueingPolicy subscribes to this event
+  (not TRACK_ACQUIRED), ensuring:
+    - TRACK_ACQUIRED still fires exactly once at LOW→MEDIUM (test_m5.py).
+    - The cueing policy only cues on HIGH quality (test_runner.py).
+
 NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
 NF-CE-004: Facade pattern explicitly applied.
@@ -26,14 +36,13 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-
+from typing import Set, Union
 import numpy as np
 
 from sim3dves.config.defaults import SimDefaults
 from sim3dves.core.event_bus import Event, EventBus, EventType
 from sim3dves.core.world import World
 from sim3dves.entities.base import Entity, EntityManager, EntityType
-from typing import Set, Union
 from sim3dves.logging.logger import Logger
 from sim3dves.payload.track_manager import TrackManager, TrackState
 
@@ -101,8 +110,8 @@ class SimulationEngine:
     - Expose ``step_detections``: the set of entity IDs confirmed detected
       in the most recent step, for use by the visualiser (M4).
     - Advance ``track_manager``: Kalman-filter track lifecycle updated each
-      step from step_detections; TRACK_ACQUIRED/TRACK_LOST events published
-      on the EventBus and written to JSONL (M5).
+      step from step_detections; TRACK_ACQUIRED/TRACK_QUALITY_HIGH/TRACK_LOST
+      events published on the EventBus and written to JSONL (M5).
 
     M5 architecture note
     --------------------
@@ -110,6 +119,16 @@ class SimulationEngine:
     advances its own ``payload`` component (step 7 of the UAV FSM) so the engine
     needs no payload-specific code.  Detection events are still collected here
     via ``payload.flush_detections()`` because the engine owns the EventBus.
+
+    Track quality events (BUG-011 fix)
+    -----------------------------------
+    Two distinct track events are now published:
+      TRACK_ACQUIRED     — fires once at LOW→MEDIUM quality transition.
+      TRACK_QUALITY_HIGH — fires once at MEDIUM→HIGH quality transition.
+    The HighQualityEoiCueingPolicy subscribes to TRACK_QUALITY_HIGH so that
+    cueing is triggered only when the track reaches HIGH confidence, while
+    TRACK_ACQUIRED retains its original MEDIUM-quality semantics for
+    logging and any other subscribers (test_m5.py contracts preserved).
 
     Determinism (SIM-003)
     ---------------------
@@ -131,6 +150,10 @@ class SimulationEngine:
     M3 FIX:
     6. NFZ violation detection added: UAV entities inside an NFZ after their
        own avoidance step trigger an NFZ_VIOLATION event (LOG-002).
+
+    BUG-011 FIX:
+    7. ``on_track_quality_high`` callback wired to TrackManager; publishes
+       TRACK_QUALITY_HIGH event for HIGH-quality cueing policy.
     """
 
     def __init__(self, config: SimulationConfig, world: World) -> None:
@@ -182,6 +205,10 @@ class SimulationEngine:
         self.event_bus.subscribe(
             EventType.TRACK_LOST, self._handle_track_event
         )
+        # BUG-011 fix: TRACK_QUALITY_HIGH also written to JSONL (LOG-002)
+        self.event_bus.subscribe(
+            EventType.TRACK_QUALITY_HIGH, self._handle_track_event
+        )
 
         self.sim_time: float = 0.0   # Current simulation time (s)
         self.step_idx: int = 0       # Zero-based step counter
@@ -191,9 +218,13 @@ class SimulationEngine:
         self.step_detections: Set[str] = set()
 
         # TrackManager: Kalman-filter track registry updated each step (M5).
-        # Callbacks publish TRACK_ACQUIRED / TRACK_LOST events on the bus.
+        # on_track_acquired  → TRACK_ACQUIRED event (LOW→MEDIUM, once).
+        # on_track_quality_high → TRACK_QUALITY_HIGH event (MEDIUM→HIGH, once).
+        # on_track_lost      → TRACK_LOST event.
+        # BUG-011 fix: on_track_quality_high wired to publish the new event.
         self.track_manager: TrackManager = TrackManager(
             on_track_acquired=self._on_track_acquired,
+            on_track_quality_high=self._on_track_quality_high,
             on_track_lost=self._on_track_lost,
         )
 
@@ -209,9 +240,12 @@ class SimulationEngine:
 
         Executes in a single pass over living entities:
           1. Behavioral + kinematic update (EntityManager.step_all).
-          2. World boundary check → kill + publish event if violated.
-          3. NFZ violation check for UAVs → publish event (M3, FLR-001).
-          4. Log step record.
+          2. World boundary check → kill + publish OUT_OF_BOUNDS if violated.
+          3. NFZ violation check for UAVs → publish NFZ_VIOLATION (M3, FLR-001).
+          4. Collect DETECTION events from UAV payloads → publish (M4, PAY-004).
+          5. Advance TrackManager: Kalman predict + update (M5).
+          6. Log living entities to JSONL (LOG-001, LOG-005).
+          7. Advance simulation clock and step index (SIM-001).
 
         Returns
         -------
@@ -293,7 +327,7 @@ class SimulationEngine:
             wall_dt_s=wall_dt,
         )
 
-        # 5. Advance clocks
+        # 7. Advance simulation clock and step index (SIM-001)
         self.sim_time += dt
         self.step_idx += 1
 
@@ -365,11 +399,33 @@ class SimulationEngine:
         Callback from TrackManager when a track reaches MEDIUM quality (M5).
 
         Publishes TRACK_ACQUIRED on the EventBus so the logger and any other
-        subscribers (e.g. a future ROE module) receive the event.
+        subscribers receive the event.  Fires exactly once per LOW→MEDIUM
+        transition — does NOT fire again at MEDIUM→HIGH (BUG-011 fix).
         """
         self.event_bus.publish(Event(
             timestamp=self.sim_time,
             event_type=EventType.TRACK_ACQUIRED,
+            payload={
+                "entity_id": entity_id,
+                "quality":   track.quality.name,
+                "is_eoi":    track.is_eoi,
+                "pos":       track.position_xy.tolist(),
+            },
+        ))
+
+    def _on_track_quality_high(self, entity_id: str, track: TrackState) -> None:
+        """
+        Callback from TrackManager when a track first reaches HIGH quality (BUG-011 fix).
+
+        Publishes TRACK_QUALITY_HIGH on the EventBus.  The
+        HighQualityEoiCueingPolicy subscribes to this event (not
+        TRACK_ACQUIRED) so that autonomous orbit cueing is triggered only
+        when the track has accumulated enough consecutive detections to be
+        HIGH confidence.  Fires exactly once per MEDIUM→HIGH transition.
+        """
+        self.event_bus.publish(Event(
+            timestamp=self.sim_time,
+            event_type=EventType.TRACK_QUALITY_HIGH,
             payload={
                 "entity_id": entity_id,
                 "quality":   track.quality.name,
@@ -397,9 +453,11 @@ class SimulationEngine:
 
     def _handle_track_event(self, event: Event) -> None:
         """
-        Write TRACK_ACQUIRED / TRACK_LOST records to JSONL (LOG-002, M5).
+        Write TRACK_ACQUIRED / TRACK_QUALITY_HIGH / TRACK_LOST records to JSONL
+        (LOG-002, M5).
 
-        Subscribed to both EventType.TRACK_ACQUIRED and EventType.TRACK_LOST.
+        Subscribed to EventType.TRACK_ACQUIRED, EventType.TRACK_QUALITY_HIGH,
+        and EventType.TRACK_LOST.
         """
         self.logger.log_event({
             "type":      event.event_type.name,
