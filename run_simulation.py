@@ -18,7 +18,7 @@ M3 scenario runner — demonstrates all M3 features:
   - Cued slew: UAV-0 and UAV-1 cued to orbit EOI (FLR-009).
   - Three search patterns with corrected safe-margin waypoints (FLR-008 fix).
   - Interactive visualiser: zoom, pan, reset, entity inspection (NF-VIZ-008-015).
-  - Smooth drag pan, arrow-key pan (NF-VIZ-016, NF-VIZ-017).
+  - Smooth drag pan and arrow-key pan (NF-VIZ-016, NF-VIZ-017).
   - Window close stops simulation (NF-VIZ-018); pause/resume key (NF-VIZ-019).
   - All M2 features retained.
 =================
@@ -32,8 +32,35 @@ M4 scenario additions:
 =================
 M5 scenario additions:
   - TrackManager active every step; track ellipses in visualiser (NF-VIZ-006 M5).
-  - Autonomous EOI cueing: when a track reaches HIGH quality and is EOI,
-    UAV-0's payload transitions to CUED mode and UAV-0 orbits the track (M5).
+  - HighQualityEoiCueingPolicy registered as EventBus subscriber: when an EOI
+    track reaches HIGH quality, UAV-0 is autonomously cued to orbit and its
+    payload transitions to CUED mode (M5, FLR-009, PAY-005).
+  - SimulationRunner separates step-loop orchestration from scenario config.
+    Headless: SimulationRunner(engine).run()
+    Interactive: SimulationRunner(engine, visualiser=plot).run()
+
+Architecture note
+-----------------
+This file is a PURE SCENARIO CONFIGURATOR.  It contains no step-loop
+logic, no timing code, no render calls, and no payload-specific
+orchestration.  All of that lives in:
+  - SimulationRunner  (sim3dves.core.runner)      — step-loop / pacing
+  - UAVEntity         (sim3dves.entities.uav)     — payload stepping
+  - CueingPolicy      (sim3dves.payload.cueing_policy) — orbit cueing rule
+
+BUG-011 fix
+-----------
+The HighQualityEoiCueingPolicy is now subscribed to EventType.TRACK_QUALITY_HIGH
+instead of EventType.TRACK_ACQUIRED.  TRACK_QUALITY_HIGH fires at the
+MEDIUM→HIGH quality promotion; TRACK_ACQUIRED continues to fire at LOW→MEDIUM.
+This satisfies both test_m5.py (TRACK_ACQUIRED fires once at MEDIUM) and
+test_runner.py (the policy only cues when quality is HIGH).
+
+BUG-007 fix
+-----------
+SimDefaults.GRID_ORIGIN is now a plain ``Tuple[float, float]`` (immutable,
+frozen-dataclass safe).  The call to RoadNetwork.build_grid() wraps it in
+``np.array()`` explicitly, as that function expects an ndarray.
 
 NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
@@ -41,7 +68,6 @@ NF-M-006: All numeric constants from SimDefaults (no magic numbers).
 """
 from __future__ import annotations
 
-import time
 import uuid
 from pathlib import Path
 
@@ -49,7 +75,9 @@ import numpy as np
 
 from sim3dves.config.defaults import SimDefaults
 from sim3dves.core.engine import SimulationConfig, SimulationEngine
+from sim3dves.core.runner import SimulationRunner
 from sim3dves.core.world import NFZCylinder, World
+from sim3dves.core.event_bus import EventType
 from sim3dves.entities.base import EntityType
 from sim3dves.entities.pedestrian import PedestrianEntity
 from sim3dves.entities.uav import SearchPattern, UAVEntity
@@ -59,12 +87,12 @@ from sim3dves.entities.vehicle import (
     WheeledVehicleEntity,
 )
 from sim3dves.maps.road_network import RoadNetwork
-from sim3dves.payload.optical_payload import GimbalMode, OpticalPayload
-from sim3dves.viz.debug_plot import DebugPlot, SimulationView
-
-# from line_profiler import LineProfiler
+from sim3dves.payload.cueing_policy import HighQualityEoiCueingPolicy
+from sim3dves.payload.optical_payload import OpticalPayload
+from sim3dves.viz.debug_plot import SimulationView
 
 _D = SimDefaults()
+# from line_profiler import LineProfiler
 
 # ### Scenario parameters (all sourced from _D or explicit overrides) ###
 # These are scenario-level overrides, not defaults; the larger world size is
@@ -74,17 +102,16 @@ WORLD_Y = 1500  # _D.WORLD_EXTENT_Y_M  # can overide 600.0
 GRID_ROWS = 10  # _D.GRID_ROWS  # can overide 6, 6, 100.0
 GRID_COLS = 10  # _D.GRID_COLS  # can overide 6, 6, 100.0
 GRID_SPACING_M = _D.GRID_SPACING_M  # can overide 6, 6, 100.0
-GRID_ORIGIN = _D.GRID_ORIGIN  # can overide np.array([50.0, 50.0])
+# BUG-007 fix: GRID_ORIGIN is now a tuple in SimDefaults; wrap in np.array()
+# for RoadNetwork.build_grid() which expects an ndarray.
+GRID_ORIGIN = np.array(_D.GRID_ORIGIN)  # np.array([50.0, 50.0])
 NUM_WHEELED = _D.NUM_WHEELED  # 1  # _D.NUM_WHEELED  # can overide 12
 NUM_TRACKED = _D.NUM_TRACKED  # 1  # _D.NUM_TRACKED  # can overide 5
-NUM_PEDESTRIANS = _D.NUM_PEDESTRIANS  #30  # _D.NUM_PEDESTRIANS  # can overide 40
+NUM_PEDESTRIANS = _D.NUM_PEDESTRIANS  # 30  # _D.NUM_PEDESTRIANS  # can overide 40
 NUM_UAVS = _D.NUM_UAVS  # 1  # _D.NUM_UAVS  # can overide 4, UAV-004: configurable multi-UAV count
 
 # NFZ cylinders placed to exercise FLR-001 avoidance
 NFZ_DEFINITIONS = []  # _D.NFZ_DEFINITIONS
-
-# Step at which UAV-0/1 are cued to orbit the first EOI pedestrian (FLR-009)
-CUE_ORBIT_STEP: int = 30
 
 
 def build_nfz_cylinders() -> list:
@@ -100,7 +127,7 @@ def build_nfz_cylinders() -> list:
 
 
 def main() -> None:
-    """Configure, populate, and run the M3 scenario."""
+    """Configure, populate, and run the M5 scenario."""
 
     # ### NFZ volumes ###
     nfz_cylinders = build_nfz_cylinders()
@@ -153,24 +180,17 @@ def main() -> None:
         ))
 
     # ### Pedestrians (PED-001..003, Req-7) ###
-    eoi_ped_pos: np.ndarray | None = None
     for i in range(NUM_PEDESTRIANS):
-        # XY: random within world extent; Z: snapped to terrain (Req-7)
         xy = rng.random(2) * world.extent
         pos = world.snap_to_terrain(np.array([xy[0], xy[1], 0.0]))
-
-        # Random initial velocity direction; speed is normalized inside entity
         velocity = rng.standard_normal(3)
-        is_eoi = (i % 10 == 0)
         ped = PedestrianEntity(
             entity_id=str(uuid.uuid4()),
             position=pos,
             velocity=velocity,
-            is_eoi=is_eoi,
+            is_eoi=(i % 10 == 0),
         )
         sim.add_entity(ped)
-        if is_eoi and eoi_ped_pos is None:
-            eoi_ped_pos = pos.copy()   # Capture for FLR-009 demo
 
     # ### UAVs (UAV-001..005, FLR-001..010) ###
     # Distribute three search patterns and one extra LAWNMOWER
@@ -182,9 +202,8 @@ def main() -> None:
     ]
     uav_entities: list[UAVEntity] = []
     for i in range(NUM_UAVS):
-        # Spawn UAVs at cruise altitude
-        spawn_x = float(rng.uniform(0.0, world.extent[0]))  # consider 200.0, 400.0 for spawn
-        spawn_y = float(rng.uniform(0.0, world.extent[1]))  # consider 200.0, 400.0 for spawn
+        spawn_x = float(rng.uniform(0.0, world.extent[0]))
+        spawn_y = float(rng.uniform(0.0, world.extent[1]))
         pos = np.array([spawn_x, spawn_y, _D.UAV_CRUISE_ALT_M])
         uav = UAVEntity(
             entity_id=f"uav-{i:02d}",
@@ -201,15 +220,31 @@ def main() -> None:
             is_eoi=False,
             rng=np.random.default_rng(int(rng.integers(0, 2 ** 31))),
         )
-        sim.add_entity(uav)
-        uav_entities.append(uav)
-        # M4: attach one OpticalPayload per UAV (PAY-001, FLR-009).
-        # Pass a seeded RNG so Bernoulli detection draws are deterministic
-        # and reproducible given the same scenario seed (SIM-003).
+        # M4: attach OpticalPayload — stepped automatically by UAVEntity (M5)
         uav.payload = OpticalPayload(
             owner_id=uav.entity_id,
             rng=np.random.default_rng(int(rng.integers(0, 2 ** 31))),
         )
+        sim.add_entity(uav)
+        uav_entities.append(uav)
+
+    # ### M5: register autonomous cueing policy on the EventBus ###
+    # HighQualityEoiCueingPolicy reacts to TRACK_QUALITY_HIGH events: when an
+    # EOI track first reaches HIGH quality, it autonomously cues UAV-0 to orbit
+    # the estimated track position and switches the payload to CUED mode.
+    #
+    # BUG-011 fix: subscribe to TRACK_QUALITY_HIGH (MEDIUM→HIGH transition),
+    # NOT to TRACK_ACQUIRED (LOW→MEDIUM transition).  This ensures:
+    #   - TRACK_ACQUIRED fires once at MEDIUM (test_m5.py contract preserved).
+    #   - The policy only cues on HIGH confidence (test_runner.py contract).
+    # No cueing logic lives in the step loop — the EventBus wires it here once.
+    cueing_policy = HighQualityEoiCueingPolicy(
+        uav_entities=uav_entities,
+        track_manager=sim.track_manager,
+    )
+    sim.event_bus.subscribe(
+        EventType.TRACK_QUALITY_HIGH, cueing_policy.on_track_acquired
+    )
 
     print(
         f"M5: {NUM_WHEELED} wheeled | {NUM_TRACKED} tracked | "
@@ -219,104 +254,17 @@ def main() -> None:
     print("Controls: scroll=zoom | right-drag/arrows=pan | R=reset"
           " | click=select | Esc=deselect | Space=pause/resume | v=toggle world/C4I view | close=stop")
 
-    # ### Visualiser (M3 interactive, NF-VIZ-008..015) ###
-    # M4: use SimulationView (DebugPlot alias) with FOV cone support
+    # ### Visualiser ###
     plot = SimulationView(
         WORLD_X, WORLD_Y,
         road_network=road_network,
         nfz_cylinders=nfz_cylinders,
     )
 
-    # ### Step loop ###
-    steps = int(config.duration_s / config.dt)
-
-    with sim.logger:
-        # NF-VIZ-018/019: use a while loop so the step budget is only consumed
-        # when a real simulation step executes.  A 'continue' in the pause
-        # branch of a for-loop would silently advance the loop counter even
-        # though sim.step() was never called (Bug 1 fix).
-        step = 0
-        while step < steps:
-            # NF-VIZ-018: window close → break cleanly; logger flushes on exit
-            if plot.window_closed:
-                break
-
-            # NF-VIZ-019: pause → render without stepping; budget unchanged
-            if plot.paused:
-                plot.render(
-                    sim.entities.living(),
-                    sim_time=sim.sim_time,
-                    track_manager=sim.track_manager,
-                )
-                time.sleep(config.dt)
-                continue  # step NOT incremented — budget is preserved
-
-            wall_start = time.perf_counter()  # wall means the real time elapsed
-            elapsed_step = sim.step()
-            print(f"Elapsed time in sim.step: {elapsed_step:.4f} sec")
-
-            # M4: step each UAV payload (PAY-001..007, NF-P-004)
-            living_entities = sim.entities.living()
-            for uav in uav_entities:
-                if uav.alive and hasattr(uav, "payload"):
-                    uav.payload.step(
-                        uav_position=uav.position,
-                        uav_heading_deg=uav.heading,
-                        entities=living_entities,
-                        dt=config.dt,
-                        structures=world.structures,
-                    )
-
-            # M5: autonomous EOI cueing via TrackManager.
-            # When any EOI track reaches HIGH quality, command UAV-0 to orbit
-            # and its payload to CUED mode targeting the tracked entity.
-            for _eoi_track in sim.track_manager.eoi_tracks():
-                from sim3dves.payload.track_manager import TrackQuality
-                if (_eoi_track.quality == TrackQuality.HIGH
-                        and len(uav_entities) > 0
-                        and uav_entities[0].alive):
-                    _uav0 = uav_entities[0]
-                    _pos = _eoi_track.position_xy
-                    _uav0.cue_orbit(
-                        center_xy=_pos,
-                        radius_m=_D.UAV_ORBIT_RADIUS_M,
-                        altitude_m=_D.UAV_CRUISE_ALT_M,
-                    )
-                    if hasattr(_uav0, "payload"):
-                        _uav0.payload.command_cued(_eoi_track.entity_id)
-
-            # FLR-009: cue two UAVs to orbit the first EOI at step 30;
-            # also command their payloads to CUED mode (PAY-005)
-            if step == CUE_ORBIT_STEP and eoi_ped_pos is not None:
-                for idx in range(min(2, len(uav_entities))):
-                    uav_entities[idx].cue_orbit(
-                        center_xy=eoi_ped_pos[:2],
-                        radius_m=_D.UAV_ORBIT_RADIUS_M,
-                        altitude_m=_D.UAV_CRUISE_ALT_M,
-                    )
-                    if hasattr(uav_entities[idx], "payload"):
-                        uav_entities[idx].payload.command_stare(eoi_ped_pos[:2])
-                print(
-                    f"  Step {step}: UAV-0/1 cued to orbit EOI at "
-                    f"({eoi_ped_pos[0]:.0f}, {eoi_ped_pos[1]:.0f})"
-                )
-
-            # Pass step_detections and track_manager so the visualiser can
-            # flash detection rings (M4) and draw track ellipses (M5).
-            plot.render(
-                sim.entities.living(),
-                sim_time=sim.sim_time,
-                detected_ids=sim.step_detections,
-                track_manager=sim.track_manager,
-            )
-
-            # Real-time pacing: sleep unused dt budget (SIM-006)
-            elapsed = time.perf_counter() - wall_start
-            remaining = config.dt - elapsed
-            print(f"remaining time is {remaining}")
-            if remaining > 0.0:
-                time.sleep(remaining)
-            step += 1  # only reached when sim.step() actually ran
+    # ### Run — SimulationRunner owns all step-loop logic ###
+    # To run headlessly: SimulationRunner(sim).run()
+    runner = SimulationRunner(sim, visualiser=plot)
+    runner.run()
 
     alive_uavs = len(sim.entities.by_type(EntityType.UAV))
     print(

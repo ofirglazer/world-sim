@@ -36,8 +36,24 @@ Quality is evaluated each step based on consecutive hit/miss counts:
     LOST   — ≥ TRK_MAX_MISS_STEPS consecutive misses → track removed
 
 Events published (via SimulationEngine EventBus):
-    TRACK_ACQUIRED — fired when a new track transitions to MEDIUM quality.
-    TRACK_LOST     — fired when a track is removed after TRK_MAX_MISS_STEPS.
+    TRACK_ACQUIRED     — fired once when a track first reaches MEDIUM quality
+                         (LOW→MEDIUM transition only).
+    TRACK_QUALITY_HIGH — fired once when a track first reaches HIGH quality
+                         (MEDIUM→HIGH transition only).  BUG-011 fix.
+    TRACK_LOST         — fired when a track is removed after TRK_MAX_MISS_STEPS.
+
+BUG-011 fix
+-----------
+Added ``on_track_quality_high`` optional callback and ``newly_high`` promotion
+list in ``step()``.  This separates the MEDIUM-acquisition signal (used by
+loggers and general observers) from the HIGH-confidence signal (used by the
+HighQualityEoiCueingPolicy).
+
+The two contracts are now independently satisfied:
+  - test_m5.py : ``on_track_acquired`` fires exactly once at LOW→MEDIUM;
+                 it does NOT fire again at MEDIUM→HIGH.
+  - test_runner.py : the cueing policy reacts to ``on_track_quality_high``
+                     which carries quality == HIGH.
 
 NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
@@ -102,6 +118,9 @@ class TrackState:
         Consecutive detection misses (resets to 0 on hit).
     is_eoi : bool
         True if the tracked entity was flagged as EOI at last detection.
+    _high_fired : bool
+        Internal guard: True once the MEDIUM→HIGH callback has fired so it
+        is never re-fired if quality drops and recovers.  (BUG-011 fix)
     """
     entity_id: str
     x: np.ndarray                       # (4,) state vector
@@ -111,6 +130,7 @@ class TrackState:
     hit_count: int = 0
     miss_count: int = 0
     is_eoi: bool = False
+    _high_fired: bool = False           # BUG-011: guard for MEDIUM→HIGH callback
 
     @property
     def position_xy(self) -> np.ndarray:
@@ -154,7 +174,13 @@ class TrackManager:
     Parameters
     ----------
     on_track_acquired : TrackCallback, optional
-        Called when a track first reaches MEDIUM quality (TRACK_ACQUIRED).
+        Called when a track first reaches MEDIUM quality (LOW→MEDIUM).
+        Fires exactly once per transition; does NOT fire again at HIGH.
+    on_track_quality_high : TrackCallback, optional
+        Called when a track first reaches HIGH quality (MEDIUM→HIGH).
+        BUG-011 fix: separate from ``on_track_acquired`` so the cueing
+        policy can react only to HIGH-confidence tracks while TRACK_ACQUIRED
+        retains its original MEDIUM-quality semantics.
     on_track_lost : TrackCallback, optional
         Called when a track is removed (TRACK_LOST).
 
@@ -171,12 +197,14 @@ class TrackManager:
 
     def __init__(
         self,
-        on_track_acquired: Optional[TrackCallback] = None,
-        on_track_lost:     Optional[TrackCallback] = None,
+        on_track_acquired:     Optional[TrackCallback] = None,
+        on_track_quality_high: Optional[TrackCallback] = None,  # BUG-011 fix
+        on_track_lost:         Optional[TrackCallback] = None,
     ) -> None:
         self.active_tracks: Dict[str, TrackState] = {}
-        self._on_acquired: Optional[TrackCallback] = on_track_acquired
-        self._on_lost:     Optional[TrackCallback] = on_track_lost
+        self._on_acquired:      Optional[TrackCallback] = on_track_acquired
+        self._on_quality_high:  Optional[TrackCallback] = on_track_quality_high
+        self._on_lost:          Optional[TrackCallback] = on_track_lost
 
     # ------------------------------------------------------------------
     # Public API
@@ -215,6 +243,7 @@ class TrackManager:
         # 2. Update or miss each existing track
         lost_ids: List[str] = []
         newly_medium: List[str] = []
+        newly_high: List[str] = []   # BUG-011 fix: tracks reaching HIGH quality
         for eid, track in self.active_tracks.items():
             if eid in detected_ids and eid in entity_map:
                 z = entity_map[eid].position[:2].astype(float)
@@ -224,9 +253,20 @@ class TrackManager:
                 track.is_eoi      = entity_map[eid].is_eoi
                 prev_quality      = track.quality
                 track.quality     = self._grade(track)
+
+                # LOW→MEDIUM transition: fire TRACK_ACQUIRED callback once
                 if (prev_quality == TrackQuality.LOW
                         and track.quality == TrackQuality.MEDIUM):
                     newly_medium.append(eid)
+
+                # MEDIUM→HIGH transition: fire TRACK_QUALITY_HIGH callback once.
+                # _high_fired guard ensures this fires at most once per track
+                # lifetime even if quality drops to LOW and recovers.
+                # BUG-011 fix.
+                if (track.quality == TrackQuality.HIGH
+                        and not track._high_fired):
+                    track._high_fired = True
+                    newly_high.append(eid)
             else:
                 track.miss_count += 1
                 track.hit_count   = 0
@@ -234,18 +274,23 @@ class TrackManager:
                 if track.miss_count >= _D.TRK_MAX_MISS_STEPS:
                     lost_ids.append(eid)
 
-        # 3. Fire TRACK_ACQUIRED callbacks
+        # 3. Fire TRACK_ACQUIRED callbacks (LOW→MEDIUM)
         for eid in newly_medium:
             if self._on_acquired is not None:
                 self._on_acquired(eid, self.active_tracks[eid])
 
-        # 4. Remove lost tracks and fire TRACK_LOST callbacks
+        # 4. Fire TRACK_QUALITY_HIGH callbacks (MEDIUM→HIGH) — BUG-011 fix
+        for eid in newly_high:
+            if self._on_quality_high is not None:
+                self._on_quality_high(eid, self.active_tracks[eid])
+
+        # 5. Remove lost tracks and fire TRACK_LOST callbacks
         for eid in lost_ids:
             track = self.active_tracks.pop(eid)
             if self._on_lost is not None:
                 self._on_lost(eid, track)
 
-        # 5. Initialise tracks for newly detected entities
+        # 6. Initialise tracks for newly detected entities
         R = self._build_R()
         for eid in detected_ids:
             if eid in self.active_tracks:

@@ -435,7 +435,12 @@ class TestEngineTrackManager(unittest.TestCase):
         self.assertIsInstance(sim.track_manager, TrackManager)
 
     def test_track_created_via_engine_step(self) -> None:
-        """M5: entity detected through engine step creates a track in TrackManager."""
+        """M5: detection pre-loaded into payload buffer reaches TrackManager via engine step.
+
+        Payload stepping is now automatic (UAVEntity._update_behavior step 7),
+        but we pre-load _pending_detections directly to test the engine's
+        flush-and-track path in isolation.
+        """
         from sim3dves.core.engine import SimulationConfig, SimulationEngine
         from sim3dves.payload.optical_payload import OpticalPayload
 

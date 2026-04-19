@@ -21,9 +21,29 @@ M4 additions: PAY_* optical payload constants (PAY-001..007, POL-001,
               NF-P-004, PAY-005).
 M5 additions: TRK_* TrackManager constants (Kalman filter, quality tiers,
               visualiser ellipse colours).
+
+BUG-007 fix
+-----------
+``GRID_ORIGIN`` was a bare ``numpy.ndarray`` and ``NFZ_DEFINITIONS`` was a
+bare ``list`` — both mutable, both lacking type annotations, and both
+incompatible with a ``frozen=True`` dataclass (the frozen constraint only
+prevents rebinding the reference; it cannot prevent in-place mutation of
+mutable objects).
+
+Fixes applied:
+  * ``GRID_ORIGIN`` → typed as ``Tuple[float, float]`` with value
+    ``(50.0, 50.0)``.  Consumers that previously used it as an ndarray
+    should wrap it: ``np.array(_D.GRID_ORIGIN)``.  This is already done
+    in ``run_simulation.py`` via the ``RoadNetwork.build_grid()`` call.
+  * ``NFZ_DEFINITIONS`` → typed as
+    ``Tuple[Tuple[float, float, float, float], ...]`` (tuple of 4-tuples).
+    A tuple is immutable so it is safe inside a frozen dataclass.
+    The value type is preserved — consumers iterate it the same way.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
-import numpy
+from typing import Tuple
 
 
 @dataclass(frozen=True)
@@ -61,7 +81,9 @@ class SimDefaults:
     GRID_ROWS: int = 6
     GRID_COLS: int = 6
     GRID_SPACING_M: float = 100.0
-    GRID_ORIGIN = numpy.array([50.0, 50.0])
+    # BUG-007 fix: typed as an immutable tuple; use np.array(_D.GRID_ORIGIN)
+    # at call-sites that need an ndarray (e.g. RoadNetwork.build_grid).
+    GRID_ORIGIN: Tuple[float, float] = (50.0, 50.0)
 
     # ### EntityManager neighbor search (NF-P-001) ###
     # Used for pedestrian social-force context.  Ground entities ignore
@@ -167,12 +189,13 @@ class SimDefaults:
     UAV_NEIGHBOR_RADIUS_M: float = 200.0  # UAV neighbor search radius (m)
 
     # ### UAV NFZ ###
-    NFZ_DEFINITIONS = [
-        # (center_x, center_y, radius_m, alt_max_m)
+    # BUG-007 fix: typed as a tuple of 4-tuples (immutable, frozen-dataclass safe).
+    # Each entry: (center_x, center_y, radius_m, alt_max_m).
+    NFZ_DEFINITIONS: Tuple[Tuple[float, float, float, float], ...] = (
         (200.0, 300.0, 60.0, 200.0),
         (450.0, 150.0, 50.0, 150.0),
         (400.0, 450.0, 70.0, 300.0),
-    ]
+    )
 
     # ### Visualiser interactive controls (NF-VIZ-008-015) ###
     VIZ_ZOOM_RESET_KEY: str = "r"             # Keyboard shortcut to reset view

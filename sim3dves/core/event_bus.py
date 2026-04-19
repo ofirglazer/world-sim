@@ -9,6 +9,18 @@ NF-CE-001: PEP8 compliant.
 NF-CE-002: Full type annotations.
 NF-CE-004: Observer pattern explicitly applied.
 Implements: SIM-002 (event bus).
+
+BUG-011 fix
+-----------
+Added ``TRACK_QUALITY_HIGH`` to ``EventType``.  This event is published by
+``SimulationEngine._on_track_quality_high`` when a track first promotes
+from MEDIUM to HIGH quality.  The ``HighQualityEoiCueingPolicy`` subscribes
+to this event — not to ``TRACK_ACQUIRED`` — so that autonomous orbit cueing
+is gated on HIGH confidence rather than the earlier MEDIUM acquisition.
+
+This resolves the irreconcilable contract between:
+  - test_m5.py : TRACK_ACQUIRED fires exactly once at LOW→MEDIUM.
+  - test_runner.py : the cueing policy only acts on HIGH quality tracks.
 """
 from __future__ import annotations
 
@@ -23,12 +35,16 @@ class EventType(Enum):
 
     FIX vs original: raw string literals ("OUT_OF_BOUNDS") replaced with
     this enum — prevents typo bugs and enables IDE completion.
+
+    BUG-011 fix: TRACK_QUALITY_HIGH added to carry the MEDIUM→HIGH
+    promotion signal separately from the LOW→MEDIUM TRACK_ACQUIRED event.
     """
     OUT_OF_BOUNDS = auto()
     ENTITY_DIED = auto()
     STEP_COMPLETE = auto()
     DETECTION = auto()
-    TRACK_ACQUIRED = auto()
+    TRACK_ACQUIRED = auto()       # LOW→MEDIUM quality transition (M5)
+    TRACK_QUALITY_HIGH = auto()   # MEDIUM→HIGH quality transition (BUG-011 fix)
     TRACK_LOST = auto()
     NFZ_VIOLATION = auto()
     LOW_FUEL = auto()
