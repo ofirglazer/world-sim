@@ -56,7 +56,6 @@ NF-CE-001..005 compliant.  Implements: NF-VIZ-001..015.
 """
 from __future__ import annotations
 
-import math
 from typing import Dict, List, Optional, Set, Tuple
 
 import matplotlib.patches as mpatches

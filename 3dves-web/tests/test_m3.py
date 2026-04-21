@@ -19,7 +19,6 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
-from typing import List
 
 # Set headless backend before any matplotlib import so DebugPlot tests
 # can exercise state logic without a display.
@@ -866,7 +865,6 @@ class TestPerEntityNeighborRadius(unittest.TestCase):
         so that payload.step() inside _update_behavior receives all entities
         within sensor range as detection candidates.
         """
-        import math
         expected = max(_D.UAV_NEIGHBOR_RADIUS_M, _D.PAY_DETECT_RANGE_M)
         self.assertAlmostEqual(_make_uav().neighbor_radius_m, expected)
 

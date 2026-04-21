@@ -146,7 +146,7 @@ def main() -> None:
     )
 
     # ### Config ###
-    config = SimulationConfig(log_file=Path("sim_log.jsonl"))
+    config = SimulationConfig(log_file=Path("../sim_log.jsonl"))
     sim = SimulationEngine(config, world)
 
     # ### Seeded RNG for deterministic spawning (SIM-003) ###

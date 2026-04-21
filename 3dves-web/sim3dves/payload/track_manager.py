@@ -63,9 +63,9 @@ Implements: M5 (TrackManager, Kalman filter, track quality, re-acquisition).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set
 
 import numpy as np
 

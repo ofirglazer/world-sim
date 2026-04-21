@@ -12,9 +12,7 @@ NF-CE-002: Full type annotations.
 """
 from __future__ import annotations
 
-import math
 import unittest
-from typing import Dict, List
 from unittest.mock import MagicMock
 
 import matplotlib
@@ -531,7 +529,6 @@ class TestVisualizerEllipse(unittest.TestCase):
     def setUp(self) -> None:
         import matplotlib
         matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
         from sim3dves.viz.debug_plot import DebugPlot
         self.plot = DebugPlot(600.0, 600.0)
 
@@ -549,7 +546,6 @@ class TestVisualizerEllipse(unittest.TestCase):
 
     def test_no_ellipses_on_empty_manager(self) -> None:
         """NF-VIZ-006 M5: empty TrackManager draws nothing (no patches)."""
-        import matplotlib.pyplot as plt
         patches_before = len(self.plot._ax.patches)
         self.plot._draw_track_ellipses(TrackManager())
         self.assertEqual(len(self.plot._ax.patches), patches_before)
