@@ -19,6 +19,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from typing import List
 
 # Set headless backend before any matplotlib import so DebugPlot tests
 # can exercise state logic without a display.
@@ -629,7 +630,7 @@ class TestEngineNFZLogging(unittest.TestCase):
         """FLR-001, LOG-002: NFZ_VIOLATION event appears in JSONL log."""
         nfz = NFZCylinder(
             center_xy=np.array([300.0, 300.0]),
-            radius_m=5.0, alt_max_m=200.0,
+            radius_m=5.0, alt_max_m=350.0,
         )
         world = _small_world(nfz_cylinders=[nfz])
         log_path = _TMPDIR / f"nfz_{uuid.uuid4()}.jsonl"
@@ -865,6 +866,7 @@ class TestPerEntityNeighborRadius(unittest.TestCase):
         so that payload.step() inside _update_behavior receives all entities
         within sensor range as detection candidates.
         """
+        import math
         expected = max(_D.UAV_NEIGHBOR_RADIUS_M, _D.PAY_DETECT_RANGE_M)
         self.assertAlmostEqual(_make_uav().neighbor_radius_m, expected)
 
