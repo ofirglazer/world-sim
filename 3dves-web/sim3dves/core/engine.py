@@ -36,7 +36,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Set, Union
+from typing import Set, Union  # BUG-002 fix: stdlib imports grouped before third-party
+
 import numpy as np
 
 from sim3dves.config.defaults import SimDefaults
@@ -47,8 +48,6 @@ from sim3dves.logging.logger import Logger
 from sim3dves.payload.track_manager import TrackManager, TrackState
 
 _DEFAULTS = SimDefaults()
-
-
 
 
 class _NullLogger:

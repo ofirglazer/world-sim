@@ -1,0 +1,34 @@
+# ── 3DVES Web Service — docker-compose.yml ───────────────────────────────
+# Single-service stack for local and single-server deployment.
+#
+# Volumes
+# -------
+# ./static    mounted into the container so frontend edits take effect
+#             on browser reload without rebuilding the image.
+# ./sim_logs  persists JSONL logs outside the container lifetime.
+#
+# Scale-out note
+# --------------
+# When multiple server replicas are needed, introduce a Redis service and
+# replace the in-process queue with Redis pub/sub.  Until then, one
+# replica is correct — see Dockerfile comment.
+
+services:
+  sim:
+    build: .
+    image: 3dves-web:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./static:/app/static        # live frontend edits without rebuild
+      - ./sim_logs:/app/sim_logs    # persist JSONL logs on host
+    environment:
+      - PYTHONUNBUFFERED=1           # immediate log output in docker logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

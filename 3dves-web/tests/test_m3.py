@@ -630,7 +630,7 @@ class TestEngineNFZLogging(unittest.TestCase):
         """FLR-001, LOG-002: NFZ_VIOLATION event appears in JSONL log."""
         nfz = NFZCylinder(
             center_xy=np.array([300.0, 300.0]),
-            radius_m=5.0, alt_max_m=200.0,
+            radius_m=5.0, alt_max_m=350.0,
         )
         world = _small_world(nfz_cylinders=[nfz])
         log_path = _TMPDIR / f"nfz_{uuid.uuid4()}.jsonl"

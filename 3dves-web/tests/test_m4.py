@@ -11,10 +11,8 @@ NF-CE-002: Full type annotations.
 """
 from __future__ import annotations
 
-import math
 import time
 import unittest
-from typing import List
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -553,7 +551,6 @@ class TestEngineDetectionEvent(unittest.TestCase):
 
     def test_logging_disabled_no_file(self) -> None:
         """SIM-007: logging_enabled=False creates no log file."""
-        import os
         from pathlib import Path
 
         log_path = Path("/tmp/test_m4_nolog.jsonl")
