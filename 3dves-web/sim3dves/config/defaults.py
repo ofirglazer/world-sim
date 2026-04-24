@@ -78,8 +78,8 @@ class SimDefaults:
 
     # ### Road network (ENV-006) ###
     ROAD_SPEED_LIMIT_MPS: float = 13.9  # Default edge speed limit (~50 km/h)
-    GRID_ROWS: int = 6
-    GRID_COLS: int = 6
+    GRID_ROWS: int = 15
+    GRID_COLS: int = 15
     GRID_SPACING_M: float = 100.0
     # BUG-007 fix: typed as an immutable tuple; use np.array(_D.GRID_ORIGIN)
     # at call-sites that need an ndarray (e.g. RoadNetwork.build_grid).
@@ -91,8 +91,8 @@ class SimDefaults:
     NEIGHBOR_RADIUS_M: float = 10.0  # Ground entity search radius (m)
 
     # ### World (ENV-001) ###
-    WORLD_EXTENT_X_M: float = 600.0  # Default world width  (m)
-    WORLD_EXTENT_Y_M: float = 600.0  # Default world height (m)
+    WORLD_EXTENT_X_M: float = 1500.0  # Default world width  (m)
+    WORLD_EXTENT_Y_M: float = 1500.0  # Default world height (m)
     WORLD_ALT_FLOOR_M: float = 0.0  # Minimum AGL altitude (m)
     WORLD_ALT_CEIL_M: float = 500.0  # Maximum AGL altitude (m)
 
@@ -116,7 +116,7 @@ class SimDefaults:
     # ==========================================================================
 
     # ### UAV platform kinematics (UAV-001, UAV-002) ###
-    UAV_MAX_SPEED_MPS: float = 25.0  # Max horizontal speed (m/s, ~90 km/h)
+    UAV_MAX_SPEED_MPS: float = 10.0  # Max horizontal speed (m/s, ~36 km/h) (prev. 25 m/s, ~90 km/h)
     UAV_CLIMB_RATE_MPS: float = 5.0  # Max climb rate (m/s)
     UAV_DESCENT_RATE_MPS: float = 3.0  # Max descent rate (m/s)
     UAV_TURN_RATE_DPS: float = 30.0  # Max yaw rate (deg/s) — UAV-002

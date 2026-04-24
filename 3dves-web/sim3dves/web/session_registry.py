@@ -50,6 +50,12 @@ class Session:
         World X extent in metres -- sent to the browser for view init.
     world_y : float
         World Y extent in metres.
+    road_network : RoadNetwork | None
+        Road graph -- serialised once into the WebSocket hello frame so
+        the browser renderer can draw it without polling a REST endpoint.
+    nfz_cylinders : list | None
+        NFZ cylinder list -- serialised once into the hello frame so the
+        browser renderer can draw exclusion zones on connection.
     """
     scenario_id:        str
     worker:             SimulationWorker
@@ -57,6 +63,8 @@ class Session:
     connection_manager: Any           # ConnectionManager (Any to avoid circular import)
     world_x:            float = 1500.0
     world_y:            float = 1500.0
+    road_network:       Any   = None  # RoadNetwork -- sent in hello frame
+    nfz_cylinders:      Any   = None  # list[NFZCylinder] -- sent in hello frame
 
 
 class SessionRegistry:
@@ -78,6 +86,8 @@ class SessionRegistry:
         connection_manager: Any,
         world_x: float = 1500.0,
         world_y: float = 1500.0,
+        road_network: Any = None,
+        nfz_cylinders: Any = None,
     ) -> str:
         """
         Register a new session, start its worker, and return the scenario_id.
@@ -90,6 +100,12 @@ class SessionRegistry:
             Fresh ConnectionManager instance for this scenario.
         world_x, world_y : float
             World extents in metres, forwarded to the browser.
+        road_network : RoadNetwork, optional
+            Road graph serialised into the hello frame so the browser
+            renderer can draw it immediately on connection.
+        nfz_cylinders : list[NFZCylinder], optional
+            NFZ cylinder list serialised into the hello frame so the
+            browser renderer can draw exclusion zones on connection.
 
         Returns
         -------
@@ -107,6 +123,8 @@ class SessionRegistry:
             connection_manager = connection_manager,
             world_x            = world_x,
             world_y            = world_y,
+            road_network       = road_network,
+            nfz_cylinders      = nfz_cylinders,
         )
 
         with self._lock:

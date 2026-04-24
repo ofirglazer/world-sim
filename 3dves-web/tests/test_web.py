@@ -266,9 +266,15 @@ class TestWebServer(unittest.TestCase):
 
         # Replace the real engine builder with a mock that runs instantly
         self._mock_engine = _make_engine_mock(steps=50, dt=0.005)
+        # build_default_engine now returns (engine, road_network, world) tuple;
+        # road_network=None and world=None are safe -- the hello frame
+        # serialiser guards both with None checks.
+        from unittest.mock import MagicMock as _MM
+        mock_world = _MM()
+        mock_world.nfz_cylinders = []
         self._patcher = patch(
             "sim3dves.web.server.build_default_engine",
-            return_value=self._mock_engine,
+            return_value=(self._mock_engine, None, mock_world),
         )
         self._patcher.start()
         # Ensure each test starts with an empty registry

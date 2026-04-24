@@ -4,7 +4,7 @@
  * WebSocket lifecycle, view state, input handling, and inspection panel
  * for the 3DVES live simulation browser client.
  *
- * Imports drawFrame, worldToCanvas, canvasToWorld, toggleC4IView, setRoadData
+ * Imports drawFrame, worldToCanvas, canvasToWorld, toggleC4IView, setRoadData, setNfzData
  * from renderer.js.  All canvas drawing is delegated there; this module
  * owns only data flow and user interaction.
  *
@@ -25,6 +25,7 @@ import {
   canvasToWorld,
   toggleC4IView,
   setRoadData,
+  setNfzData,
 } from "./renderer.js";
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -100,6 +101,7 @@ function connect(sid) {
       vs.worldY = data.world_y;
       resetView();
       if (data.road_data) setRoadData(data.road_data);
+      setNfzData(data.nfz_data || []);
       return;
     }
 

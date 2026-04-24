@@ -60,10 +60,10 @@ _D = SimDefaults()
 # ---------------------------------------------------------------------------
 # Scenario dimensions (match run_simulation.py defaults)
 # ---------------------------------------------------------------------------
-_WORLD_X:       float = 1500.0
-_WORLD_Y:       float = 1500.0
-_GRID_ROWS:     int   = 10
-_GRID_COLS:     int   = 10
+_WORLD_X:       float = _D.WORLD_EXTENT_X_M  # 1500.0
+_WORLD_Y:       float = _D.WORLD_EXTENT_Y_M  # 1500.0
+_GRID_ROWS:     int   = _D.GRID_ROWS  # 10
+_GRID_COLS:     int   = _D.GRID_COLS  # 10
 
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
@@ -132,7 +132,7 @@ class ConnectionManager:
 # Scenario builder
 # ---------------------------------------------------------------------------
 
-def build_default_engine(seed: int = _D.SIM_SEED) -> SimulationEngine:
+def build_default_engine(seed: int = _D.SIM_SEED) -> tuple:  # (engine, road_network, world)
     """
     Build and return a fully populated SimulationEngine.
 
@@ -158,10 +158,20 @@ def build_default_engine(seed: int = _D.SIM_SEED) -> SimulationEngine:
         _GRID_ROWS, _GRID_COLS, _D.GRID_SPACING_M, origin,
         speed_limit_mps=_D.ROAD_SPEED_LIMIT_MPS,
     )
+    # Build NFZ cylinders from SimDefaults so they match run_simulation.py.
+    # NFZ_DEFINITIONS is a tuple of (cx, cy, radius_m, alt_max_m) tuples.
+    nfz_cylinders = [
+        NFZCylinder(
+            center_xy=np.array([cx, cy]),
+            radius_m=float(radius),
+            alt_max_m=float(alt_max),
+        )
+        for cx, cy, radius, alt_max in _D.NFZ_DEFINITIONS
+    ]
     world = World(
         extent=np.array([_WORLD_X, _WORLD_Y]),
         road_network=road_network,
-        nfz_cylinders=[],          # NFZs disabled for default scenario
+        nfz_cylinders=nfz_cylinders,
         alt_floor_m=_D.UAV_ALT_FLOOR_M,
         alt_ceil_m=_D.UAV_ALT_CEIL_M,
     )
@@ -258,7 +268,7 @@ def build_default_engine(seed: int = _D.SIM_SEED) -> SimulationEngine:
         EventType.TRACK_QUALITY_HIGH, cueing_policy.on_track_acquired
     )
 
-    return sim
+    return sim, road_network, world
 
 
 # ---------------------------------------------------------------------------
@@ -280,9 +290,14 @@ async def create_scenario() -> dict:
     # Ensure log directory exists
     Path("sim_logs").mkdir(exist_ok=True)
 
-    engine = build_default_engine()
-    cm     = ConnectionManager()
-    sid    = registry.create(engine, cm, world_x=_WORLD_X, world_y=_WORLD_Y)
+    engine, road_network, world = build_default_engine()
+    cm  = ConnectionManager()
+    sid = registry.create(
+        engine, cm,
+        world_x=_WORLD_X, world_y=_WORLD_Y,
+        road_network=road_network,
+        nfz_cylinders=world.nfz_cylinders,
+    )
 
     return {"scenario_id": sid, "world_x": _WORLD_X, "world_y": _WORLD_Y}
 
@@ -336,11 +351,47 @@ async def websocket_endpoint(ws: WebSocket, scenario_id: str) -> None:
     cm = session.connection_manager
     await cm.connect(ws)
 
-    # Send world dimensions immediately so the browser can set up its view
+    # Send world dimensions and road network immediately so the browser
+    # renderer can draw the road overlay from the very first frame.
+    rn = session.road_network
+    if rn is not None:
+        # Serialise nodes as {node_id: [x, y]} and edges as [[a_id, b_id], ...]
+        # Edges: iterate adjacency dict, emit each undirected pair once.
+        nodes = {
+            nid: [round(float(rn.node_position(nid)[0]), 2),
+                  round(float(rn.node_position(nid)[1]), 2)]
+            for nid in rn.node_ids()
+        }
+        seen = set()
+        edges = []
+        for a_id in rn.node_ids():
+            for b_id in rn._adjacency.get(a_id, {}):
+                pair = tuple(sorted([a_id, b_id]))
+                if pair not in seen:
+                    seen.add(pair)
+                    edges.append([a_id, b_id])
+        road_data = {"nodes": nodes, "edges": edges}
+    else:
+        road_data = None
+
+    # Serialise NFZ cylinders: list of {cx, cy, radius_m, alt_max_m}
+    nfzs = session.nfz_cylinders or []
+    nfz_data = [
+        {
+            "cx":       round(float(nfz.center_xy[0]), 2),
+            "cy":       round(float(nfz.center_xy[1]), 2),
+            "radius_m": round(float(nfz.radius_m), 2),
+            "alt_max_m":round(float(nfz.alt_max_m), 2),
+        }
+        for nfz in nfzs
+    ]
+
     await ws.send_text(json.dumps({
-        "type":    "hello",
-        "world_x": session.world_x,
-        "world_y": session.world_y,
+        "type":      "hello",
+        "world_x":   session.world_x,
+        "world_y":   session.world_y,
+        "road_data": road_data,
+        "nfz_data":  nfz_data,
     }))
 
     try:
