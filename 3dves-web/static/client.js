@@ -5,6 +5,13 @@
  * for the 3DVES live simulation browser client.
  *
  * Imports drawFrame, worldToCanvas, canvasToWorld, toggleC4IView, setRoadData, setNfzData
+ *
+ * Inspection panel
+ * -----------------
+ * _showPanel(ent)   called on click — opens panel and sets selectedId.
+ * _updatePanel(frame) called every frame — refreshes content without
+ *                    changing visibility or selected entity.
+ * _buildPanelHtml(ent) pure function — builds the inner HTML string.
  * from renderer.js.  All canvas drawing is delegated there; this module
  * owns only data flow and user interaction.
  *
@@ -102,11 +109,18 @@ function connect(sid) {
       resetView();
       if (data.road_data) setRoadData(data.road_data);
       setNfzData(data.nfz_data || []);
+      // Draw immediately so roads and NFZs appear before the first step
+      // frame arrives — otherwise the canvas stays blank for up to 1 dt.
+      drawFrame(canvas, lastFrame || { t: 0, step: 0, entities: [], tracks: [] },
+                vs, opts, selectedId);
       return;
     }
 
     lastFrame = data;
     drawFrame(canvas, lastFrame, vs, opts, selectedId);
+    // Refresh inspection panel every frame so position, speed, endurance
+    // etc. update live without requiring the user to re-click the entity.
+    _updatePanel(lastFrame);
   };
 
   ws.onclose = () => {
@@ -140,33 +154,35 @@ function _setStatus(text, connected) {
   dot.classList.toggle("connected", connected);
 }
 
-function _showPanel(ent) {
-  selectedId = ent.id;
-  document.getElementById("panel-title").textContent = ent.type + " · " + ent.id.slice(0, 8);
-  const body = document.getElementById("panel-body");
+// ── Inspection panel ─────────────────────────────────────────────────────
 
+/**
+ * Build the inner HTML string for the inspection panel from an entity record.
+ * Pure function — no side effects — called on click and on every frame update.
+ */
+function _buildPanelHtml(ent) {
   const row = (k, v, cls = "") =>
     `<div class="prow"><span class="pk">${k}</span><span class="pv ${cls}">${v}</span></div>`;
 
   let html = "";
-  html += row("State",   ent.state);
-  html += row("EOI",     ent.is_eoi  ? "YES" : "No",   ent.is_eoi  ? "eoi" : "");
-  html += row("Detected",ent.detected ? "YES" : "No",   ent.detected ? "det" : "");
+  html += row("State",    ent.state);
+  html += row("EOI",      ent.is_eoi   ? "YES" : "No",  ent.is_eoi   ? "eoi" : "");
+  html += row("Detected", ent.detected ? "YES" : "No",  ent.detected ? "det" : "");
 
   const p = ent.pos;
   html += row("Position", `${p[0].toFixed(1)}, ${p[1].toFixed(1)}, ${p[2].toFixed(1)} m`);
   const v = ent.vel;
-  const speed = Math.sqrt(v[0]**2 + v[1]**2 + v[2]**2).toFixed(2);
+  const speed = Math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2).toFixed(2);
   html += row("Speed",   `${speed} m/s`);
   html += row("Heading", `${ent.heading.toFixed(1)}°`);
 
   if (ent.type === "UAV") {
     html += `<div class="section-hdr">Flight</div>`;
-    html += row("Mode",       ent.autopilot_mode || "—");
-    html += row("Role",       ent.deconflict_role || "—");
-    html += row("Endurance",  `${ent.endurance_s}s`,  ent.low_fuel ? "lf" : "");
-    html += row("Low Fuel",   ent.low_fuel  ? "YES" : "No",  ent.low_fuel  ? "lf" : "");
-    html += row("NFZ Viol.",  ent.nfz_violated ? "YES" : "No", ent.nfz_violated ? "danger" : "");
+    html += row("Mode",      ent.autopilot_mode  || "—");
+    html += row("Role",      ent.deconflict_role || "—");
+    html += row("Endurance", `${ent.endurance_s}s`, ent.low_fuel ? "lf" : "");
+    html += row("Low Fuel",  ent.low_fuel      ? "YES" : "No", ent.low_fuel      ? "lf" : "");
+    html += row("NFZ Viol.", ent.nfz_violated  ? "YES" : "No", ent.nfz_violated  ? "danger" : "");
 
     if (ent.fov) {
       html += `<div class="section-hdr">Payload</div>`;
@@ -177,8 +193,38 @@ function _showPanel(ent) {
     }
   }
 
-  body.innerHTML = html;
+  return html;
+}
+
+/**
+ * Open the panel for *ent* and record it as the selected entity.
+ * Called once on click; subsequent updates come from _updatePanel().
+ */
+function _showPanel(ent) {
+  selectedId = ent.id;
+  document.getElementById("panel-title").textContent =
+    ent.type + " · " + ent.id.slice(0, 8);
+  document.getElementById("panel-body").innerHTML = _buildPanelHtml(ent);
   document.getElementById("panel").classList.add("visible");
+}
+
+/**
+ * Refresh the panel content from the current frame without changing
+ * which entity is selected or toggling panel visibility.
+ *
+ * Called every time a new frame arrives while selectedId is set so that
+ * position, speed, heading, endurance, detected state etc. update live.
+ * No-op when no entity is selected or the selected entity has died.
+ */
+function _updatePanel(frame) {
+  if (!selectedId) return;
+  const ent = frame.entities.find(e => e.id === selectedId);
+  if (!ent) {
+    // Entity has died or left the scene — close the panel cleanly
+    _hidePanel();
+    return;
+  }
+  document.getElementById("panel-body").innerHTML = _buildPanelHtml(ent);
 }
 
 function _hidePanel() {

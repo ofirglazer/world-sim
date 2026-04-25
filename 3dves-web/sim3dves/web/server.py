@@ -99,8 +99,18 @@ class ConnectionManager:
         self._sockets: Set[WebSocket] = set()
 
     async def connect(self, ws: WebSocket) -> None:
-        """Accept and register a WebSocket connection."""
+        """Accept and register a WebSocket connection (combined, for tests)."""
         await ws.accept()
+        self._sockets.add(ws)
+
+    def register(self, ws: WebSocket) -> None:
+        """
+        Add an already-accepted WebSocket to the broadcast set.
+
+        Use this instead of ``connect()`` when ``ws.accept()`` has already
+        been called manually — e.g. when the hello frame must be sent
+        before the client enters the broadcast fan-out.
+        """
         self._sockets.add(ws)
 
     def disconnect(self, ws: WebSocket) -> None:
@@ -349,10 +359,17 @@ async def websocket_endpoint(ws: WebSocket, scenario_id: str) -> None:
         return
 
     cm = session.connection_manager
-    await cm.connect(ws)
 
-    # Send world dimensions and road network immediately so the browser
-    # renderer can draw the road overlay from the very first frame.
+    # Accept the WebSocket handshake first (ASGI requires accept before send).
+    await ws.accept()
+
+    # Send world dimensions, road network and NFZ data immediately.
+    # IMPORTANT: we do NOT add this client to cm._sockets yet.  The
+    # _broadcast_loop is already running and would otherwise deliver a
+    # simulation step frame to this client before the hello arrives,
+    # leaving _nfzData and _roadData uninitialised on the browser for the
+    # lifetime of the connection.  We add to _sockets only after hello is
+    # sent (see cm._sockets.add(ws) below).
     rn = session.road_network
     if rn is not None:
         # Serialise nodes as {node_id: [x, y]} and edges as [[a_id, b_id], ...]
@@ -393,6 +410,12 @@ async def websocket_endpoint(ws: WebSocket, scenario_id: str) -> None:
         "road_data": road_data,
         "nfz_data":  nfz_data,
     }))
+
+    # Add to broadcast set AFTER hello is sent — guarantees the client's
+    # _nfzData and _roadData are populated before the first step frame.
+    # ws.accept() was already called above; cm.register() adds to _sockets
+    # without calling accept() again.
+    cm.register(ws)
 
     try:
         while True:

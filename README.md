@@ -6,6 +6,7 @@
 5. Press "New Scenario". Verify connecting to the server.
 
 ## TODOs
+* data panels for selected entities should update and not remain static.
 * rounding in serializer to reflect 5-10 cm and not 2.
 
 ## check
